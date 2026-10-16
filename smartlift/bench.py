@@ -9,7 +9,7 @@ import pandas as pd
 from .config import BuildingConfig
 from .dispatch.classical import FCFS, DestinationDispatch, Look, NearestCar
 from .experiment import ARTIFACTS, TEST_WEEKDAYS, day_forecasts, load_dataset
-from .ml.rl import LSTMRLDispatcher, load_agents
+from .ml.rl import LSTMRLDispatcher, algo_name, load_agents
 from .sim.core import Simulation
 from .traffic import SCENARIOS, scenario_window
 
@@ -26,13 +26,19 @@ def forecast_for(source: str, day: int):
     return day_forecasts(source, [day])[day]
 
 
-def algorithm_factories(cfg: BuildingConfig, day: int) -> dict[str, Callable]:
-    """name -> function creating a fresh dispatcher for `day`."""
-    algos = dict(CLASSICAL)
-    for (source, lam), agent in trained_agents().items():
+def seeded_factories(cfg: BuildingConfig, day: int) -> list[tuple[str, int | None, Callable]]:
+    """(name, training seed, function creating a fresh dispatcher for `day`) for every algorithm
+    and every trained seed. Classical algorithms have no seed."""
+    algos = [(name, None, D) for name, D in CLASSICAL.items()]
+    for (source, lam, seed), agent in trained_agents().items():
         make = lambda agent=agent, source=source, lam=lam: LSTMRLDispatcher(agent, forecast_for(source, day), lam)
-        algos[make().name] = make
+        algos.append((algo_name(source, lam), seed, make))
     return algos
+
+
+def algorithm_factories(cfg: BuildingConfig, day: int) -> dict[str, Callable]:
+    """name -> dispatcher factory, one per algorithm (seed 0 for RL agents). Used by the app."""
+    return {name: make for name, seed, make in seeded_factories(cfg, day) if seed in (None, 0)}
 
 
 def run_one(cfg: BuildingConfig, dispatcher, day_trips: pd.DataFrame, scenario: str, record_every: int = 0):
@@ -51,10 +57,11 @@ def benchmark(algorithms: list[str] | None = None, scenarios: list[str] | None =
     rows = []
     jobs = [(d, s) for d in days for s in scenarios]
     for i, (day, scen) in enumerate(jobs):
-        factories = algorithm_factories(cfg, day)
-        for name in algorithms or factories:
-            m = run_one(cfg, factories[name](), df[df.day == day], scen).metrics()
-            rows.append({"algorithm": name, "scenario": scen, "day": day, **m})
+        for name, seed, make in seeded_factories(cfg, day):
+            if algorithms and name not in algorithms:
+                continue
+            m = run_one(cfg, make(), df[df.day == day], scen).metrics()
+            rows.append({"algorithm": name, "seed": seed, "scenario": scen, "day": day, **m})
         if progress:
             progress((i + 1) / len(jobs))
     return pd.DataFrame(rows)

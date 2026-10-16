@@ -25,8 +25,8 @@ streamlit run app/streamlit_app.py          # the interactive app (trained model
 pytest                                       # tests
 python -m scripts.train_forecasters          # ~1 min: train + evaluate LSTM, Bi-LSTM+GRU
 python -m scripts.active_learning            # ~5 min: active-learning experiment
-python -m scripts.train_rl                   # ~1 h: 7 LSTM + RL agents in parallel (λ sweep + ablations)
-python -m scripts.run_benchmark              # ~1 min: all algorithms × scenarios × 5 test days
+python -m scripts.train_rl                   # ~35 min: 19 LSTM + RL agents in parallel (λ sweep + 5-seed ablations)
+python -m scripts.run_benchmark              # ~4 min: all algorithms × scenarios × 5 test days
 ```
 
 ## What's inside
@@ -74,7 +74,8 @@ Trained on whole simulated *training* days (250 per agent); the checkpoint with 
 ## Results
 
 Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and every scenario are in the app).
-λ = 0.5 is the headline setting.
+λ = 0.5 is the headline setting. The three λ = 0.5 agents (LSTM + RL and both ablations) were each trained with
+**5 random seeds**, and their rows are the mean over all 5 seeds × 5 days (no seed was picked).
 
 **Full day**
 
@@ -86,11 +87,11 @@ Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and e
 | Destination Dispatch | 14.1 | 47 | 47.5 | 119.9 |
 | LSTM + RL (λ=0) | 10.3 | 36 | 40.0 | 161.8 |
 | LSTM + RL (λ=0.25) | 10.4 | 36 | 40.2 | 128.5 |
-| **LSTM + RL (λ=0.5)** | 11.3 | 37 | 43.3 | 118.1 |
+| **LSTM + RL (λ=0.5)** | 11.0 | 36 | 42.6 | 119.1 |
 | LSTM + RL (λ=1) | 15.4 | 44 | 49.0 | 100.5 |
 | LSTM + RL (λ=2) | 20.7 | 63 | 56.7 | 87.2 |
-| RL, no forecast (λ=0.5) | 11.7 | 39 | 43.6 | 116.6 |
-| RL + oracle forecast (λ=0.5) | 11.2 | 36 | 42.8 | 115.4 |
+| RL, no forecast (λ=0.5) | 11.7 | 38 | 43.4 | 116.5 |
+| RL + oracle forecast (λ=0.5) | 11.0 | 36 | 42.5 | 116.3 |
 
 **Morning up-peak (07:30–10:00)**
 
@@ -102,12 +103,20 @@ Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and e
 | Destination Dispatch | 11.8 | 30 | 65.5 | 19.3 |
 | LSTM + RL (λ=0) | 5.4 | 22 | 46.4 | 35.1 |
 | LSTM + RL (λ=0.25) | 6.0 | 25 | 47.5 | 27.8 |
-| **LSTM + RL (λ=0.5)** | 8.3 | 28 | 57.4 | 21.5 |
+| **LSTM + RL (λ=0.5)** | 7.8 | 27 | 55.7 | 22.6 |
 | LSTM + RL (λ=1) | 13.5 | 38 | 66.7 | 17.8 |
 | LSTM + RL (λ=2) | 17.5 | 47 | 72.5 | 16.4 |
-| RL, no forecast (λ=0.5) | 8.2 | 31 | 56.0 | 22.4 |
-| RL + oracle forecast (λ=0.5) | 7.5 | 26 | 55.6 | 22.2 |
+| RL, no forecast (λ=0.5) | 8.0 | 28 | 55.3 | 22.7 |
+| RL + oracle forecast (λ=0.5) | 7.2 | 25 | 54.7 | 22.9 |
 
+**Seed robustness** (full day, λ = 0.5, mean ± std over the 5 training seeds)
+
+| Agent | Avg wait (s) | Energy (kWh) | Seeds better than Nearest Car on both |
+|---|---:|---:|---:|
+| Nearest Car (reference) | 13.5 | 124.6 | – |
+| LSTM + RL | 11.0 ± 0.3 | 119.1 ± 1.7 | 5 / 5 |
+| RL, no forecast | 11.7 ± 0.8 | 116.5 ± 3.2 | 5 / 5 |
+| RL + oracle forecast | 11.0 ± 0.4 | 116.3 ± 1.9 | 5 / 5 |
 
 **Demand forecasting** (next 5 minutes, per floor & direction, test days 84–111)
 
@@ -121,9 +130,9 @@ Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and e
 
 ### Findings
 
-1. **LSTM + RL beats the best classical algorithm on waiting *and* energy at the same time.** At λ = 0.5, full day:
-   11.3 s average wait vs 13.5 s for Nearest Car (−16%), 118 kWh vs 125 kWh (−5%), 95th-percentile wait 37 s vs
-   43 s. It was better on both on **every one** of the 5 test days (1.2–2.9 s less waiting, 4.8–8.2 kWh less).
+1. **LSTM + RL beats the best classical algorithm on waiting *and* energy at the same time.** At λ = 0.5, full day,
+   averaged over 5 training seeds: 11.0 s average wait vs 13.5 s for Nearest Car (−19%), 119 kWh vs 125 kWh (−4%),
+   95th-percentile wait 36 s vs 43 s. **All 5 seeds** beat Nearest Car on both, so it is not one lucky training run.
 2. **λ gives a real trade-off curve.** λ = 0 waits least (10.3 s) but parks cars aggressively (162 kWh);
    λ = 2 uses 30% less energy than Nearest Car (87 kWh) but waits longer (20.7 s). A building owner picks the point.
 3. **Coordination matters most for energy.** Group control (Nearest Car) uses **37% less energy** than
@@ -131,10 +140,11 @@ Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and e
 4. **The sequence models are the best forecasters.** Bi-LSTM+GRU closes ~79% of the gap between the historical
    average and the oracle noise floor, because it sees *today's* level (occupancy, early peak, a conference).
    It edges out the plain LSTM, the same ordering the paper claimed but with a far smaller gap.
-5. **But most of the dispatching gain comes from RL, not from the forecast.** With the same λ, the agent that
-   only sees the last 5 minutes of calls does about as well as the LSTM one (paired over the 5 test days:
-   LSTM better on 2, worse on 3; differences within noise). A *perfect* forecast is better on all 5 days, by about
-   2.7 kWh at the same waiting time, so better forecasts do help, but the LSTM is not yet accurate enough to show it.
+5. **Most of the dispatching gain comes from RL; the forecast adds a smaller, consistent extra.** All three λ = 0.5
+   agents beat Nearest Car, even the one without a forecast. Compared with that no-forecast agent, the LSTM agent has
+   a lower combined cost (wait + λ·energy) in **4 of 5 seeds**: it waits 0.7 s less for 2.6 kWh more, and its
+   results vary 3× less between seeds. A *perfect* forecast beats the LSTM in all 5 seeds (same wait, ~2.8 kWh less),
+   so a more accurate forecaster would help further.
 6. **Active learning: the naive version fails, a diverse version helps early.** After a tenant change:
    * Picking the 24 most uncertain windows (MC dropout) is no better than not updating, because they are
      near-duplicates from the same peak.
@@ -157,8 +167,9 @@ Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and e
 * The simulator ignores acceleration profiles and passenger behaviour such as reopening doors or balking.
 * Assignment uses γ = 0 (each call is credited only with its own passenger's wait); only positioning uses
   multi-step (SMDP) credit assignment.
-* Each agent is trained once (one seed). RL training is noisy, so small differences between agents
-  (e.g. LSTM vs no-forecast) partly reflect training luck. Several seeds per agent would tighten this.
+* RL training is noisy. The λ = 0.5 comparison uses 5 seeds; the other λ values use one seed each, so their
+  points on the trade-off curve are less certain. Only 5 seeds, so the LSTM vs no-forecast gap is suggestive
+  rather than statistically strong.
 * The LSTM's forecasts on training days are in-sample (it was trained on them), so the agent sees slightly
   better forecasts in training than at test time.
 * Results are averaged over 5 test days, so small differences (< ~0.5 s) are within noise.

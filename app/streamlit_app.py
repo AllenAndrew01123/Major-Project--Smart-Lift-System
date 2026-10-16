@@ -243,7 +243,8 @@ with tabs[2]:
 
     bench = ARTIFACTS / "bench" / "results.csv"
     if bench.exists():
-        with st.expander("Saved benchmark: mean ± std over 5 unseen test weekdays (default building)"):
+        with st.expander("Saved benchmark: mean ± std over 5 unseen test weekdays, and over 5 training seeds "
+                         "for the λ = 0.5 RL agents (default building)"):
             r = pd.read_csv(bench)
             r = r[r.scenario == scenario]
             agg = r.groupby("algorithm", sort=False)[["avg_wait_s", "p95_wait_s", "avg_journey_s", "energy_kwh"]]
@@ -460,8 +461,10 @@ One agent, trained by trial and error in the simulator on *training* days only, 
 """)
     bench = ARTIFACTS / "bench" / "results.csv"
     if bench.exists():
-        r = pd.read_csv(bench)
-        r = r[r.scenario == "Full day"].groupby("algorithm", sort=False)[["avg_wait_s", "energy_kwh"]].mean()
+        full = pd.read_csv(bench)
+        full = full[full.scenario == "Full day"]
+        r = full.groupby("algorithm", sort=False)[["avg_wait_s", "energy_kwh"]].mean()
+        per_seed = full.dropna(subset=["seed"]).groupby(["algorithm", "seed"])[["avg_wait_s", "energy_kwh"]].mean()
         fig = go.Figure()
         sweep = r[r.index.str.startswith(SOURCE_NAMES["LSTM"])]
         fig.add_scatter(x=sweep.energy_kwh, y=sweep.avg_wait_s, mode="lines+markers+text", name="LSTM + RL (λ sweep)",
@@ -472,6 +475,14 @@ One agent, trained by trial and error in the simulator on *training* days only, 
             if name in r.index:
                 fig.add_scatter(x=[r.loc[name, "energy_kwh"]], y=[r.loc[name, "avg_wait_s"]], mode="markers",
                                 name=name, marker=dict(size=12, color=color, symbol=symbol))
+        for name, color in [(MAIN, ML_COLOR), (algo_name("Persistence", MAIN_LAM), SLOTS[1]),
+                            (algo_name("Oracle", MAIN_LAM), SLOTS[2])]:
+            if name in per_seed.index.get_level_values(0):
+                seeds = per_seed.loc[name]
+                fig.add_scatter(x=seeds.energy_kwh, y=seeds.avg_wait_s, mode="markers", showlegend=False,
+                                marker=dict(size=7, color=color, opacity=0.35),
+                                hovertemplate=name + " seed %{text}: %{y:.1f} s, %{x:.1f} kWh<extra></extra>",
+                                text=[f"{int(x)}" for x in seeds.index])
         classic = r[~r.index.map(is_ml)]
         fig.add_scatter(x=classic.energy_kwh, y=classic.avg_wait_s, mode="markers+text", name="classical",
                         text=list(classic.index), textposition="bottom center",
@@ -480,15 +491,17 @@ One agent, trained by trial and error in the simulator on *training* days only, 
                           xaxis_title="energy (kWh)", yaxis_title="average wait (s)")
         st.plotly_chart(style(fig, 460), width="stretch")
         st.caption("Ablations at the same λ: *no forecast* sees only the last 5 minutes of calls; "
-                   "*oracle* sees the true demand rate, the best any forecast could do.")
+                   "*oracle* sees the true demand rate, the best any forecast could do. The λ = 0.5 agents were "
+                   "each trained with 5 seeds: big markers are the mean, faint dots are individual seeds.")
 
     runs = {p.stem: load_json(p) for p in sorted((ARTIFACTS / "rl").glob("*_lam*.json"))}
     if not runs:
         st.warning("Run `python -m scripts.train_rl` first.")
     else:
-        labels = {k: algo_name(v["source"], v["lam"]) for k, v in runs.items()}
+        labels = {k: f'{algo_name(v["source"], v["lam"])} · seed {v["seed"]}' for k, v in runs.items()}
+        main = f"{MAIN} · seed 0"
         key = st.selectbox("Training run", list(runs), format_func=labels.get,
-                           index=list(labels.values()).index(MAIN) if MAIN in labels.values() else 0)
+                           index=list(labels.values()).index(main) if main in labels.values() else 0)
         info = runs[key]
         curve = pd.DataFrame(info["curve"])
         val = curve.dropna(subset=["val_wait_s"])

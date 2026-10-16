@@ -306,7 +306,7 @@ def train(lam: float, source: str = "LSTM", episodes: int = 250, seed: int = 0, 
                 f"energy {row['val_energy_kwh']:.1f} kWh  actions {row['actions']}")
         curve.append(row)
     agent.load_state_dict(best[1])
-    return agent, {"lam": lam, "source": source, "episodes": episodes, "curve": curve, "best_val_cost": best[0],
+    return agent, {"lam": lam, "source": source, "seed": seed, "episodes": episodes, "curve": curve, "best_val_cost": best[0],
                    "nearest_car_val": baseline}
 
 
@@ -314,25 +314,25 @@ def algo_name(source: str, lam: float) -> str:
     return f"{SOURCE_NAMES.get(source, source)} (λ={lam:g})"
 
 
-def model_path(out_dir, source: str, lam: float):
-    return out_dir / f"{source.lower()}_lam{lam:g}.pt"
+def model_path(out_dir, source: str, lam: float, seed: int = 0):
+    return out_dir / f"{source.lower()}_lam{lam:g}_seed{seed}.pt"
 
 
 def save(agent: Agent, info: dict, out_dir):
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = model_path(out_dir, info["source"], info["lam"])
+    path = model_path(out_dir, info["source"], info["lam"], info["seed"])
     torch.save(agent.state_dict(), path)
     path.with_suffix(".json").write_text(json.dumps(info, indent=2))
 
 
-def load_agents(out_dir) -> dict[tuple[str, float], Agent]:
-    """Every trained agent in `out_dir`, keyed by (forecast source, lam)."""
+def load_agents(out_dir) -> dict[tuple[str, float, int], Agent]:
+    """Every trained agent in `out_dir`, keyed by (forecast source, lam, seed)."""
     agents = {}
     for path in sorted(out_dir.glob("*_lam*.pt")):
         info = json.loads(path.with_suffix(".json").read_text())
         agent = Agent()
         agent.load_state_dict(torch.load(path))
         agent.eval()
-        agents[(info["source"], info["lam"])] = agent
+        agents[(info["source"], info["lam"], info["seed"])] = agent
     order = list(SOURCE_NAMES)
-    return dict(sorted(agents.items(), key=lambda kv: (order.index(kv[0][0]), kv[0][1])))
+    return dict(sorted(agents.items(), key=lambda kv: (order.index(kv[0][0]), kv[0][1], kv[0][2])))
