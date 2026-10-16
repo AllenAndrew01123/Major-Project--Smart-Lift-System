@@ -83,23 +83,29 @@ def load_json(path):
     return json.loads(path.read_text()) if path.exists() else None
 
 
-# ---------------------------------------------------------------- sidebar
-st.sidebar.title("🛗 SmartLift")
-st.sidebar.caption("Simulating & comparing lift dispatching algorithms, classical vs machine learning.")
-st.sidebar.subheader("Building")
-st.sidebar.markdown("16 floors (lobby + 15) · 60 people per floor")
-n_lifts = st.sidebar.slider("Number of lifts", 2, 8, 4)
-capacity = st.sidebar.slider("Car capacity (people)", 6, 20, 12)
-if (n_lifts, capacity) != (4, 12):
-    st.sidebar.caption("The RL agents were trained on the default building (4 lifts, 12 people). "
-                       "Other sizes test how well they generalise.")
-st.sidebar.subheader("Traffic")
-day = st.sidebar.selectbox("Test day (never seen in training)", TEST_WEEKDAYS, format_func=day_label)
-scenario = st.sidebar.selectbox("Scenario", list(SCENARIOS))
-a, b = SCENARIOS[scenario]
-st.sidebar.caption(f"{hhmm(a * 3600)} – {hhmm(b * 3600)}")
+# ---------------------------------------------------------------- per-tab settings
+def pick_day(key: str) -> int:
+    return st.selectbox("Test day (never seen in training)", TEST_WEEKDAYS, format_func=day_label, key=f"{key}_day")
 
-ALGOS = list(algorithm_factories(BuildingConfig(), day))
+
+def run_settings(key: str):
+    """Settings for a live simulation, shown at the top of the tab that uses them."""
+    c = st.columns(4)
+    with c[0]:
+        day = pick_day(key)
+    scenario = c[1].selectbox("Time of day", list(SCENARIOS), key=f"{key}_scenario",
+                              format_func=lambda s: f"{s} ({hhmm(SCENARIOS[s][0] * 3600)}–{hhmm(SCENARIOS[s][1] * 3600)})")
+    n_lifts = c[2].slider("Number of lifts", 2, 8, 4, key=f"{key}_lifts")
+    capacity = c[3].slider("Car capacity (people)", 6, 20, 12, key=f"{key}_capacity")
+    if (n_lifts, capacity) != (4, 12):
+        st.caption("⚠️ The RL agent was trained on the default building (4 lifts, 12 people), and the saved "
+                   "results use it too. Other sizes test how well it generalises.")
+    return day, scenario, n_lifts, capacity
+
+
+# The algorithms in the app: the 4 classical ones and LSTM + RL at the chosen λ.
+# Other λ values and the ablations are experiments, shown only in the RL agent tab.
+ALGOS = [n for n in algorithm_factories(BuildingConfig(), TEST_WEEKDAYS[0]) if not is_ml(n) or n == MAIN]
 
 tabs = st.tabs(["Overview", "Traffic", "Compare algorithms", "Watch a run", "Forecasting models", "RL agent"])
 
@@ -129,7 +135,7 @@ digraph {
         r = pd.read_csv(bench)
         full = r[r.scenario == "Full day"].groupby("algorithm", sort=False)[["avg_wait_s", "energy_kwh"]].mean()
         nc = full.loc["Nearest Car (ETA)"]
-        st.subheader("Headline results (full day, mean of 5 test days)")
+        st.subheader("Headline results (full day, mean of 5 test days; LSTM + RL also over 5 training seeds)")
         c = st.columns(4)
         c[0].metric("Best classical wait", f"{nc.avg_wait_s:.1f} s", help="Nearest Car (ETA)")
         if MAIN in full.index:
@@ -145,8 +151,9 @@ digraph {
 **Algorithms**
 """)
     descr = {}
-    for name, factory in algorithm_factories(BuildingConfig(), day).items():
-        descr[name] = factory().description
+    factories = algorithm_factories(BuildingConfig(), TEST_WEEKDAYS[0])
+    for name in ALGOS:
+        descr[name] = factories[name]().description
     st.dataframe(pd.DataFrame({"Algorithm": descr.keys(), "Type": ["ML" if is_ml(n) else "Classical" for n in descr],
                                "How it works": descr.values()}), hide_index=True, width="stretch")
 
@@ -154,6 +161,7 @@ digraph {
 with tabs[1]:
     df, series, rates = dataset()
     st.header("Synthetic traffic")
+    day = pick_day("traffic")
     st.markdown("Real lift logs aren't public, so traffic comes from a **non-homogeneous Poisson process** "
                 "built from lift-traffic theory: a morning up-peak, lunch two-way traffic, an evening "
                 "down-peak and interfloor meetings. Day-to-day occupancy changes, random conferences and "
@@ -200,8 +208,9 @@ with tabs[1]:
 # ================================================================= Compare
 with tabs[2]:
     st.header("Compare algorithms")
-    default = ["FCFS", "LOOK (collective)", "Nearest Car (ETA)", "Destination Dispatch", algo_name("LSTM", 0), MAIN]
-    chosen = st.multiselect("Algorithms", ALGOS, [a for a in default if a in ALGOS])
+    st.caption("Runs a live simulation of every chosen algorithm on the same passengers.")
+    day, scenario, n_lifts, capacity = run_settings("compare")
+    chosen = st.multiselect("Algorithms", ALGOS, ALGOS)
     st.caption(f"{scenario} on {day_label(day)} · {n_lifts} lifts · capacity {capacity}")
     if chosen:
         rows, waits = [], {}
@@ -246,10 +255,10 @@ with tabs[2]:
 
     bench = ARTIFACTS / "bench" / "results.csv"
     if bench.exists():
-        with st.expander("Saved benchmark: mean ± std over 5 unseen test weekdays, and over 5 training seeds "
-                         "for the λ = 0.5 RL agents (default building)"):
+        with st.expander(f"Saved benchmark for {scenario}: mean ± std over all 5 test weekdays "
+                         "(default building; LSTM + RL also over 5 training seeds)"):
             r = pd.read_csv(bench)
-            r = r[r.scenario == scenario]
+            r = r[(r.scenario == scenario) & r.algorithm.isin(ALGOS)]
             agg = r.groupby("algorithm", sort=False)[["avg_wait_s", "p95_wait_s", "avg_journey_s", "energy_kwh"]]
             mean, std = agg.mean(), agg.std()
             table = mean.round(1).astype(str) + " ± " + std.round(1).astype(str)
@@ -258,6 +267,8 @@ with tabs[2]:
 # ================================================================= Watch
 with tabs[3]:
     st.header("Watch a run")
+    day, scenario, n_lifts, capacity = run_settings("watch")
+    a, b = SCENARIOS[scenario]
     algo = st.selectbox("Algorithm", ALGOS, index=ALGOS.index(MAIN) if MAIN in ALGOS else 0)
     m, _, snaps, trips = simulate(n_lifts, capacity, algo, scenario, day, record_every=2)
     marks = list(range(int(a * 3600), int(b * 3600) + 1, 300))  # every 5 minutes of the scenario

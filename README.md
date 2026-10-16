@@ -54,9 +54,7 @@ python -m scripts.run_benchmark              # ~4 min: all algorithms × scenari
 | Classical | LOOK (collective) | Every car sweeps up and down on its own, no coordination |
 | Classical | Nearest Car (ETA) | Group control: each call goes to the car with the lowest estimated arrival time |
 | Classical | Destination Dispatch | Passengers enter their floor; people going to the same floors share a car |
-| ML | **LSTM + RL** | One reinforcement-learning agent makes both decisions (below), at several λ |
-| Ablation | RL, no forecast | Same agent, but it only sees the last 5 minutes of calls instead of the LSTM forecast |
-| Ablation | RL + oracle forecast | Same agent with the true demand rate: the best any forecast could do |
+| ML | **LSTM + RL (λ = 0.5)** | One reinforcement-learning agent makes both decisions (below) |
 
 **How LSTM + RL works** (`smartlift/ml/rl.py`). λ is in seconds of waiting per Wh: how much energy matters.
 
@@ -74,8 +72,7 @@ Trained on whole simulated *training* days (250 per agent); the checkpoint with 
 ## Results
 
 Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and every scenario are in the app).
-λ = 0.5 is the headline setting. The three λ = 0.5 agents (LSTM + RL and both ablations) were each trained with
-**5 random seeds**, and their rows are the mean over all 5 seeds × 5 days (no seed was picked).
+LSTM + RL is also averaged over **5 training seeds** (no seed was picked).
 
 **Full day**
 
@@ -85,13 +82,7 @@ Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and e
 | LOOK (collective) | 15.4 | 53 | 45.4 | 198.1 |
 | Nearest Car (ETA) | 13.5 | 43 | 46.4 | 124.6 |
 | Destination Dispatch | 14.1 | 47 | 47.5 | 119.9 |
-| LSTM + RL (λ=0) | 10.3 | 36 | 40.0 | 161.8 |
-| LSTM + RL (λ=0.25) | 10.4 | 36 | 40.2 | 128.5 |
 | **LSTM + RL (λ=0.5)** | 11.0 | 36 | 42.6 | 119.1 |
-| LSTM + RL (λ=1) | 15.4 | 44 | 49.0 | 100.5 |
-| LSTM + RL (λ=2) | 20.7 | 63 | 56.7 | 87.2 |
-| RL, no forecast (λ=0.5) | 11.7 | 38 | 43.4 | 116.5 |
-| RL + oracle forecast (λ=0.5) | 11.0 | 36 | 42.5 | 116.3 |
 
 **Morning up-peak (07:30–10:00)**
 
@@ -101,15 +92,26 @@ Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and e
 | LOOK (collective) | 6.7 | 27 | 47.8 | 31.8 |
 | Nearest Car (ETA) | 12.1 | 30 | 65.7 | 19.3 |
 | Destination Dispatch | 11.8 | 30 | 65.5 | 19.3 |
-| LSTM + RL (λ=0) | 5.4 | 22 | 46.4 | 35.1 |
-| LSTM + RL (λ=0.25) | 6.0 | 25 | 47.5 | 27.8 |
 | **LSTM + RL (λ=0.5)** | 7.8 | 27 | 55.7 | 22.6 |
-| LSTM + RL (λ=1) | 13.5 | 38 | 66.7 | 17.8 |
-| LSTM + RL (λ=2) | 17.5 | 47 | 72.5 | 16.4 |
-| RL, no forecast (λ=0.5) | 8.0 | 28 | 55.3 | 22.7 |
-| RL + oracle forecast (λ=0.5) | 7.2 | 25 | 54.7 | 22.9 |
 
-**Seed robustness** (full day, λ = 0.5, mean ± std over the 5 training seeds)
+### Experiments behind the LSTM + RL design
+
+These are not separate algorithms; they justify the choices above.
+
+**Choosing λ** (full day, one seed each; Nearest Car: 13.5 s, 124.6 kWh). λ is the price of
+energy in seconds of waiting per Wh. Smaller λ waits less but spends more energy; larger λ saves energy but waits longer.
+λ = 0.5 was fixed before training (`MAIN_LAM` in `rl.py`), not picked from test results, and it is
+the only value that beats Nearest Car on both.
+
+| λ | Avg wait (s) | Energy (kWh) |
+|---:|---:|---:|
+| 0 | 10.3 | 161.8 |
+| 0.25 | 10.4 | 128.5 |
+| **0.5 (chosen; mean of 5 seeds)** | 11.0 | 119.1 |
+| 1 | 15.4 | 100.5 |
+| 2 | 20.7 | 87.2 |
+
+**Does the forecast help? Ablations** (full day, λ = 0.5, mean ± std over 5 training seeds). The same agent with no forecast (only the last 5 minutes of calls) and with a perfect (oracle) forecast:
 
 | Agent | Avg wait (s) | Energy (kWh) | Seeds better than Nearest Car on both |
 |---|---:|---:|---:|
