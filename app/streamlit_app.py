@@ -90,6 +90,9 @@ st.sidebar.subheader("Building")
 st.sidebar.markdown("16 floors (lobby + 15) · 60 people per floor")
 n_lifts = st.sidebar.slider("Number of lifts", 2, 8, 4)
 capacity = st.sidebar.slider("Car capacity (people)", 6, 20, 12)
+if (n_lifts, capacity) != (4, 12):
+    st.sidebar.caption("The RL agents were trained on the default building (4 lifts, 12 people). "
+                       "Other sizes test how well they generalise.")
 st.sidebar.subheader("Traffic")
 day = st.sidebar.selectbox("Test day (never seen in training)", TEST_WEEKDAYS, format_func=day_label)
 scenario = st.sidebar.selectbox("Scenario", list(SCENARIOS))
