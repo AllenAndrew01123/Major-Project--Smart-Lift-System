@@ -15,8 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from smartlift.bench import algorithm_factories, run_one  # noqa: E402
 from smartlift.config import BuildingConfig  # noqa: E402
-from smartlift.experiment import (ARTIFACTS, DRIFT, DRIFT_TENANTS, TEST, TEST_WEEKDAYS, TRAIN, VAL,  # noqa: E402
-                                  load_dataset)
+from smartlift.experiment import ARTIFACTS, TEST_WEEKDAYS, load_dataset  # noqa: E402
 from smartlift.ml.rl import ACTIONS, MAIN_LAM, SOURCE_NAMES, algo_name  # noqa: E402
 from smartlift.traffic import BIN_S, BINS_PER_DAY, SCENARIOS  # noqa: E402
 
@@ -83,67 +82,131 @@ def load_json(path):
     return json.loads(path.read_text()) if path.exists() else None
 
 
-# ---------------------------------------------------------------- sidebar
-st.sidebar.title("🛗 SmartLift")
-st.sidebar.caption("Simulating & comparing lift dispatching algorithms, classical vs machine learning.")
-st.sidebar.subheader("Building")
-st.sidebar.markdown("16 floors (lobby + 15) · 60 people per floor")
-n_lifts = st.sidebar.slider("Number of lifts", 2, 8, 4)
-capacity = st.sidebar.slider("Car capacity (people)", 6, 20, 12)
-st.sidebar.subheader("Traffic")
-day = st.sidebar.selectbox("Test day (never seen in training)", TEST_WEEKDAYS, format_func=day_label)
-scenario = st.sidebar.selectbox("Scenario", list(SCENARIOS))
-a, b = SCENARIOS[scenario]
-st.sidebar.caption(f"{hhmm(a * 3600)} – {hhmm(b * 3600)}")
+# ---------------------------------------------------------------- per-tab settings
+def pick_day(key: str) -> int:
+    return st.selectbox("Test day (never seen in training)", TEST_WEEKDAYS, format_func=day_label, key=f"{key}_day")
 
-ALGOS = list(algorithm_factories(BuildingConfig(), day))
 
-tabs = st.tabs(["Overview", "Traffic", "Compare algorithms", "Watch a run", "Forecasting models", "RL agent"])
+def run_settings(key: str):
+    """Settings for a live simulation, shown at the top of the tab that uses them."""
+    c = st.columns(4)
+    with c[0]:
+        day = pick_day(key)
+    order = ["Full day"] + [name for name in SCENARIOS if name != "Full day"]  # full day first
+    scenario = c[1].selectbox("Time of day", order, key=f"{key}_scenario",
+                              format_func=lambda s: f"{s} ({hhmm(SCENARIOS[s][0] * 3600)}–{hhmm(SCENARIOS[s][1] * 3600)})")
+    n_lifts = c[2].slider("Number of lifts", 2, 8, 4, key=f"{key}_lifts")
+    capacity = c[3].slider("Car capacity (people)", 6, 20, 12, key=f"{key}_capacity")
+    if (n_lifts, capacity) != (4, 12):
+        st.caption("⚠️ The RL agent was trained on the default building (4 lifts, 12 people), and the saved "
+                   "results use it too. Other sizes test how well it generalises.")
+    return day, scenario, n_lifts, capacity
+
+
+# The algorithms in the app: the 4 classical ones and LSTM + RL at the chosen λ.
+# Other λ values and the ablations are experiments, shown only in the RL agent tab.
+ALGOS = [n for n in algorithm_factories(BuildingConfig(), TEST_WEEKDAYS[0]) if not is_ml(n) or n == MAIN]
+
+tabs = st.tabs(["Overview", "Traffic", "Compare algorithms", "Watch a run", "RL agent"])
 
 # ================================================================= Overview
 with tabs[0]:
-    st.header("An approach towards a smart lift system using ML: revamped")
+    st.header("An approach towards a smart lift system using ML")
+    st.subheader("Have you ever noticed that waiting for a lift takes longer at certain hours?")
     st.markdown("""
-**Question:** can machine learning make a group of lifts serve people faster *and* use less energy?
+At 9 in the morning the queue in the lobby never seems to move, yet at 3 in the afternoon a lift is there almost
+as soon as you press the button. **Why is that?** And when nobody is using them, **why are the lifts parked where
+they are?** Sometimes all of them are up on the 12th floor, just when you're standing in the lobby.
 
-**How:** a discrete-time simulator (1 tick = 1 s) of a 16-floor office with 4 lifts runs on synthetic traffic.
-Every dispatching algorithm, classical or ML, plugs into the same simulator and is scored on the same
-unseen test days.
+It comes down to two things:
+
+* **Rush hours.** At 9 am almost everyone starts in the lobby and goes up. Each lift fills up, makes many stops on the
+  way, and then has to travel all the way back down empty before it can take the next group. Demand arrives faster
+  than the lifts can come back, so a queue builds up. At lunch and in the evening the same thing happens in other
+  directions.
+* **Simple rules.** Behind the panel, a *group controller* decides which lift answers each call, hundreds of times a
+  day. Most follow a fixed rule of thumb like *"send the nearest lift"*, and a free lift often just stays wherever
+  it last stopped. The rule reacts to calls; it can't see the morning rush coming, and it doesn't notice that a lift
+  standing idle with its lights on all night is quietly using electricity.
+
+**So we asked: what if the lifts could *learn*?** Learn when the rush is coming (an **LSTM** forecasts the calls in
+the next 5 minutes), where to wait for it, when to power down, and which car should answer each call. They learn by
+trial and error in a simulated building (**reinforcement learning**), then face days they have never seen.
 """)
-    st.graphviz_chart("""
-digraph {
-  rankdir=LR; node [shape=box, style="rounded", fontname="Helvetica", fontsize=11];
-  traffic [label="Synthetic traffic\\n(non-homogeneous Poisson,\\npeaks, events, drift)"];
-  counts [label="Hall calls per\\n5 min × floor × dir"];
-  fc [label="Forecasters\\nHist. avg · LSTM ·\\nBi-LSTM+GRU · Active RNN"];
-  sim [label="Simulator\\nlifts · doors · boarding\\nenergy (ISO 25745 split)"];
-  disp [label="Dispatchers\\nFCFS · LOOK · Nearest Car ·\\nDestination · LSTM + RL"];
-  out [label="Metrics\\nwait · journey · kWh"];
-  traffic -> sim; traffic -> counts -> fc -> disp; disp -> sim [dir=both]; sim -> out;
-}""")
     bench = ARTIFACTS / "bench" / "results.csv"
     if bench.exists():
         r = pd.read_csv(bench)
-        full = r[r.scenario == "Full day"].groupby("algorithm", sort=False)[["avg_wait_s", "energy_kwh"]].mean()
-        nc = full.loc["Nearest Car (ETA)"]
-        st.subheader("Headline results (full day, mean of 5 test days)")
-        c = st.columns(4)
-        c[0].metric("Best classical wait", f"{nc.avg_wait_s:.1f} s", help="Nearest Car (ETA)")
-        if MAIN in full.index:
-            ml = full.loc[MAIN]
-            c[1].metric(f"{MAIN} wait", f"{ml.avg_wait_s:.1f} s",
-                        f"{(ml.avg_wait_s / nc.avg_wait_s - 1) * 100:+.0f}% vs Nearest Car", delta_color="inverse")
-            c[2].metric(f"{MAIN} energy", f"{ml.energy_kwh:.0f} kWh",
-                        f"{(ml.energy_kwh / nc.energy_kwh - 1) * 100:+.0f}% vs Nearest Car", delta_color="inverse")
-        c[3].metric("LOOK → Nearest Car energy", f"{nc.energy_kwh:.0f} kWh",
-                    f"{(nc.energy_kwh / full.loc['LOOK (collective)'].energy_kwh - 1) * 100:+.0f}%",
-                    delta_color="inverse")
+        full = r[r.scenario == "Full day"]
+        mean = full.groupby("algorithm", sort=False)[["avg_wait_s", "p95_wait_s", "energy_kwh"]].mean()
+        nc = mean.loc["Nearest Car (ETA)"]
+        if MAIN in mean.index:
+            ml = mean.loc[MAIN]
+            seeds = full[full.algorithm == MAIN].groupby("seed")[["avg_wait_s", "energy_kwh"]].mean()
+            wins = int(((seeds.avg_wait_s < nc.avg_wait_s) & (seeds.energy_kwh < nc.energy_kwh)).sum())
+            st.subheader("Here's what we found")
+            st.markdown(f"Against **Nearest Car**, the best classical controller we tested, over a full working day "
+                        f"in a 16-floor office:")
+            c = st.columns(4)
+            c[0].metric("Average wait", f"{ml.avg_wait_s:.1f} s",
+                        f"{(ml.avg_wait_s / nc.avg_wait_s - 1) * 100:+.0f}% (was {nc.avg_wait_s:.1f} s)",
+                        delta_color="inverse")
+            c[1].metric("95% of people waited under", f"{ml.p95_wait_s:.0f} s",
+                        f"{(ml.p95_wait_s / nc.p95_wait_s - 1) * 100:+.0f}% (was {nc.p95_wait_s:.0f} s)",
+                        delta_color="inverse", help="95th-percentile waiting time")
+            c[2].metric("Energy per day", f"{ml.energy_kwh:.0f} kWh",
+                        f"{(ml.energy_kwh / nc.energy_kwh - 1) * 100:+.0f}% (was {nc.energy_kwh:.0f} kWh)",
+                        delta_color="inverse")
+            c[3].metric("Better on both, every time?", f"{wins} / {len(seeds)}",
+                        "separately trained versions", delta_color="off",
+                        help="The ML controller was trained 5 times from scratch, with different random seeds; each version is counted.")
+            how_many = "every version" if wins == len(seeds) else f"{wins} of the {len(seeds)} versions"
+            st.markdown("**In short: people wait less, and the lifts use less electricity.** We tested this on "
+                        f"5 days of traffic the ML controller had never seen. We also trained it {len(seeds)} separate "
+                        f"times, and {how_many} beat Nearest Car on both waiting and energy. Use the tabs above to run "
+                        "the algorithms yourself or watch the lifts move.")
+
+    st.subheader("How we tested it")
+    st.markdown("""
+A simulator (1 tick = 1 second) runs a 16-floor office with 4 lifts on synthetic traffic: a morning rush, lunch,
+an evening rush, meetings, and the odd conference. Every controller, classical or ML, faces exactly the same
+passengers, and is scored on how long people wait and how much electricity the lifts use.
+""")
+    _, mid, _ = st.columns([1, 3, 1])  # middle column = centred diagram
+    mid.graphviz_chart("""
+digraph {
+  rankdir=TB; nodesep=0.5; ranksep=0.45; bgcolor="transparent";
+  node [shape=box, style="rounded,filled", fillcolor="#eef2f8", color="#b8c2d3", fontname="Helvetica",
+        fontsize=12, fontcolor="#1d2433", margin="0.18,0.1"];
+  edge [color="#8a94a6", fontname="Helvetica", fontsize=10, fontcolor="#8a94a6", arrowsize=0.7];
+
+  traffic [label=<<b>Synthetic traffic</b><br/><font point-size="10">140 days of office passengers</font>>];
+  lstm [label=<<b>LSTM forecast</b><br/><font point-size="10">hall calls in the next 5 minutes</font>>];
+  sim [label=<<b>Lift simulator</b><br/><font point-size="10">16 floors · 4 lifts · energy meter</font>>];
+  out [label=<<b>Results</b><br/><font point-size="10">waiting time · energy (kWh)</font>>];
+  ctrl [shape=plain, style="", label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="8" color="#b8c2d3" style="rounded">
+      <tr><td colspan="2" bgcolor="#eef2f8"><b>Controller</b><font point-size="10">: plug in one</font></td></tr>
+      <tr>
+        <td bgcolor="#f5f5f3"><b>Classical rules</b><br/><font point-size="10">FCFS · LOOK<br/>Nearest Car · Destination</font></td>
+        <td port="ml" bgcolor="#dce9fb"><b>ML controller</b><br/><font point-size="10">LSTM + RL</font></td>
+      </tr>
+    </table>>];
+
+  {rank=same; out; sim; lstm;}
+  traffic -> sim [label=" passengers"];
+  traffic -> lstm [label=" past calls"];
+  sim -> out [label=" scores"];
+  sim -> ctrl [label=" where lifts are,\n who is waiting"];
+  ctrl -> sim [label=" which lift\n goes where"];
+  lstm -> ctrl:ml [label=" forecast"];
+}""", width="stretch")
     st.markdown("""
 **Algorithms**
 """)
     descr = {}
-    for name, factory in algorithm_factories(BuildingConfig(), day).items():
-        descr[name] = factory().description
+    factories = algorithm_factories(BuildingConfig(), TEST_WEEKDAYS[0])
+    for name in ALGOS:
+        descr[name] = factories[name]().description
     st.dataframe(pd.DataFrame({"Algorithm": descr.keys(), "Type": ["ML" if is_ml(n) else "Classical" for n in descr],
                                "How it works": descr.values()}), hide_index=True, width="stretch")
 
@@ -151,54 +214,83 @@ digraph {
 with tabs[1]:
     df, series, rates = dataset()
     st.header("Synthetic traffic")
-    st.markdown("Real lift logs aren't public, so traffic comes from a **non-homogeneous Poisson process** "
-                "built from lift-traffic theory: a morning up-peak, lunch two-way traffic, an evening "
-                "down-peak and interfloor meetings. Day-to-day occupancy changes, random conferences and "
-                "a mid-dataset tenant change make the data realistic enough for the forecasters to learn from.")
+    st.markdown("Real lift logs from office buildings aren't public, so we generate the passengers ourselves, "
+                "using the patterns described in lift-traffic engineering (Barney, *Elevator Traffic Handbook*).")
+    day = pick_day("traffic")
     day_df = df[df.day == day]
+    day_bins = slice(day * BINS_PER_DAY, (day + 1) * BINS_PER_DAY)
+    per_bin = series[day_bins].sum(1)
     c = st.columns(3)
     c[0].metric("Trips on this day", f"{len(day_df):,}")
-    c[1].metric("Busiest 5 minutes", int(series[day * BINS_PER_DAY:(day + 1) * BINS_PER_DAY].sum(1).max()))
+    c[1].metric("Busiest 5 minutes", f"{int(per_bin.max())} people", f"at {hhmm(int(per_bin.argmax()) * BIN_S)}",
+                delta_color="off")
     c[2].metric("Dataset size", f"{df.day.nunique()} days", f"{len(df):,} trips", delta_color="off")
 
-    s = series[day * BINS_PER_DAY:(day + 1) * BINS_PER_DAY].reshape(BINS_PER_DAY, -1, 2)
+    s = series[day_bins].reshape(BINS_PER_DAY, -1, 2)
     times = clock(np.arange(BINS_PER_DAY) * BIN_S)
     fig = go.Figure()
     for k, (label, color) in enumerate([("Up calls", SLOTS[0]), ("Down calls", SLOTS[1])]):
         fig.add_bar(x=times, y=s[:, :, k].sum(1), name=label, marker_color=color)
+    fig.add_scatter(x=times, y=rates[day_bins].sum(1), name="Expected (from the formula)", mode="lines",
+                    line=dict(color=NEUTRAL, width=2))
     fig.update_layout(barmode="stack", bargap=0.1, title=f"Hall calls per 5 minutes, {day_label(day)}",
                       hovermode="x unified")
     fig.update_xaxes(tickformat="%H:%M", hoverformat="%H:%M")
     st.plotly_chart(style(fig), width="stretch")
+    st.caption("Bars = the passengers actually generated. Line = the expected number from the formula below. "
+               "The bars wobble around the line: that randomness is what a real day looks like.")
 
-    heat = s.sum(2).T
-    fig = go.Figure(go.Heatmap(z=heat, x=times, y=[f"Floor {f}" if f else "Lobby" for f in range(heat.shape[0])],
-                               colorscale=[[0, "rgba(42,120,214,0.03)"], [1, "#0d3a73"]],
-                               hovertemplate="%{y} at %{x}: %{z} calls<extra></extra>",
-                               zmin=0, zmax=float(np.percentile(heat[heat > 0], 98)), zauto=False,
-                               colorbar=dict(title="calls")))
-    fig.update_xaxes(tickformat="%H:%M")
-    fig.update_layout(title="Where the calls come from (origin floor × time; colour capped at the 98th "
-                            "percentile so upper floors stay visible next to the lobby)")
-    st.plotly_chart(style(fig, 420), width="stretch")
+    st.subheader("How the traffic is made")
+    st.markdown("""
+**Step 1: how many trips to expect, minute by minute.** For each floor *f* and minute *t*:
+""")
+    st.latex(r"\lambda_f(t) \;=\; \underbrace{P_f}_{\text{people on floor}} \times "
+             r"\underbrace{o_d}_{\text{today's turnout}} \times "
+             r"\underbrace{\textstyle\sum_k a_k\, g(t;\, \mu_k, \sigma_k)}_{\text{daily pattern}}")
+    st.markdown(r"""
+* $P_f$ = 60 people on each of the 15 upper floors.
+* $g(t; \mu, \sigma)$ is a bell curve centred at time $\mu$ with spread $\sigma$, scaled so its area is 1.
+  The weight $a$ in front is then simply **trips per person**.
 
-    daily = df.groupby("day").size()
-    colors = [NEUTRAL if d % 7 >= 5 else (SLOTS[1] if d >= DRIFT[0] else SLOTS[0]) for d in daily.index]
-    fig = go.Figure(go.Bar(x=daily.index, y=daily.values, marker_color=colors,
-                           hovertemplate="Day %{x}: %{y} trips<extra></extra>"))
-    for (lo, hi), label in [(TRAIN, "train"), (VAL, "val"), (TEST, "test"), (DRIFT, "drift")]:
-        fig.add_vrect(x0=lo - 0.5, x1=hi - 0.5, line_width=0, fillcolor="rgba(128,128,128,0.06)",
-                      annotation_text=label, annotation_position="top left")
-    fig.update_layout(title="Trips per day across the 140-day dataset (gray = weekends, orange = after tenant change)",
-                      showlegend=False, bargap=0.15)
-    st.plotly_chart(style(fig, 320), width="stretch")
-    st.caption("Tenant change (from day 112): " + ", ".join(f"floor {f} → {p} people" for _, f, p in DRIFT_TENANTS))
+| Pattern | Trip | Peak $\mu$ | Spread $\sigma$ | Trips per person $a$ |
+|---|---|---|---|---|
+| Morning arrival | lobby → own floor | 09:00 | 27 min | 0.85 |
+| Lunch out | own floor → lobby | 12:18 | 18 min | 0.35 |
+| Lunch back | lobby → own floor | 13:18 | 18 min | 0.35 |
+| Evening departure | own floor → lobby | 17:36 | 33 min | 0.85 |
+| Meetings | own floor → another floor | flat, 09:45–17:00 | – | 1.5 |
+| Background | own floor → another floor | flat, all day | – | 0.05 |
+
+**Step 2: make every day a little different**, so a forecaster has something to learn beyond "the average day":
+* **Turnout** $o_d \sim \mathcal{N}(1,\ 0.12)$: some days are busier (a deadline), some quieter (rain, holidays).
+* **Peak times shift** by $\delta \sim \mathcal{N}(0,\ 15\ \text{min})$: the 9:00 rush is sometimes at 8:45 (lunch peaks shift half as much).
+* **Weekends** are 15% as busy.
+* **Conferences:** on 1 weekday in 4, 50 extra people arrive at a random floor between 10:00 and 15:00 and leave 1.5 h later.
+* **A tenant change** from day 112: floors 13–15 fill up (150 people each) and floors 2–3 empty out (10 each).
+  Only the active-learning experiment uses those days.
+
+**Step 3: draw the actual passengers.** The number of people who turn up in a minute is random:
+""")
+    st.latex(r"N_f(t) \sim \text{Poisson}\big(\lambda_f(t)\big)")
+    st.markdown(r"""
+Each person gets a random second within that minute; for meetings, the destination is a random other floor.
+This is a **non-homogeneous Poisson process**: Poisson because many people decide independently when to use
+the lift, *non-homogeneous* because the rate $\lambda$ changes through the day.
+
+**Why this matters for the ML.** Because we know $\lambda$ exactly, we also know the *best possible* forecast
+(the **oracle**). No model can predict the Poisson randomness itself, so the oracle shows how close the LSTM
+gets to perfect, and the RL experiments use it to test what a perfect forecast would be worth.
+
+**How the 140 days are used:** days 0–69 train the models, 70–83 decide when to stop training, 84–111 are the
+**test days** (all results in this app come from these), and 112–139 are the tenant-change days.
+""")
 
 # ================================================================= Compare
 with tabs[2]:
     st.header("Compare algorithms")
-    default = ["FCFS", "LOOK (collective)", "Nearest Car (ETA)", "Destination Dispatch", algo_name("LSTM", 0), MAIN]
-    chosen = st.multiselect("Algorithms", ALGOS, [a for a in default if a in ALGOS])
+    st.caption("Runs a live simulation of every chosen algorithm on the same passengers.")
+    day, scenario, n_lifts, capacity = run_settings("compare")
+    chosen = st.multiselect("Algorithms", ALGOS, ALGOS)
     st.caption(f"{scenario} on {day_label(day)} · {n_lifts} lifts · capacity {capacity}")
     if chosen:
         rows, waits = [], {}
@@ -243,10 +335,10 @@ with tabs[2]:
 
     bench = ARTIFACTS / "bench" / "results.csv"
     if bench.exists():
-        with st.expander("Saved benchmark: mean ± std over 5 unseen test weekdays, and over 5 training seeds "
-                         "for the λ = 0.5 RL agents (default building)"):
+        with st.expander(f"Saved benchmark for {scenario}: mean ± std over all 5 test weekdays "
+                         "(default building; LSTM + RL also over 5 training seeds)"):
             r = pd.read_csv(bench)
-            r = r[r.scenario == scenario]
+            r = r[(r.scenario == scenario) & r.algorithm.isin(ALGOS)]
             agg = r.groupby("algorithm", sort=False)[["avg_wait_s", "p95_wait_s", "avg_journey_s", "energy_kwh"]]
             mean, std = agg.mean(), agg.std()
             table = mean.round(1).astype(str) + " ± " + std.round(1).astype(str)
@@ -255,6 +347,8 @@ with tabs[2]:
 # ================================================================= Watch
 with tabs[3]:
     st.header("Watch a run")
+    day, scenario, n_lifts, capacity = run_settings("watch")
+    a, b = SCENARIOS[scenario]
     algo = st.selectbox("Algorithm", ALGOS, index=ALGOS.index(MAIN) if MAIN in ALGOS else 0)
     m, _, snaps, trips = simulate(n_lifts, capacity, algo, scenario, day, record_every=2)
     marks = list(range(int(a * 3600), int(b * 3600) + 1, 300))  # every 5 minutes of the scenario
@@ -352,112 +446,85 @@ with tabs[3]:
                    "Grey bars on the left = people waiting on each floor. Uses the time window chosen above"
                    + (f" (long window: every {skip}th frame shown)." if skip > 1 else "."))
 
-# ================================================================= Forecasting
-with tabs[4]:
-    st.header("Forecasting hall-call demand")
-    st.markdown("""
-Predict the number of hall calls **per floor and direction in the next 5 minutes** from the last hour.
-The two network architectures are the ones proposed in the original paper; outputs are log-rates trained
-with **Poisson negative log-likelihood** because the targets are counts.
-* **LSTM**: LSTM(128) → Dropout(0.2) → LSTM(64) → Dropout(0.2) → Dense(32)
-* **Bi-LSTM + GRU**: BiLSTM(128) → Dropout(0.2) → GRU(64) → Dropout(0.2) → Dense(32)
-* **Oracle** = the true Poisson rate used to generate the data: the *best any model could possibly do*.
-""")
-    metrics = load_json(ARTIFACTS / "forecast" / "metrics.json")
-    if metrics is None:
-        st.warning("Run `python -m scripts.train_forecasters` first.")
-    else:
-        t = pd.DataFrame(metrics["test"]).T
-        t.columns = ["RMSE (per cell)", "MAE (per cell)", "Poisson NLL", "RMSE (building total)",
-                     "MAPE % (busy bins)"]
-        st.dataframe(t.style.format("{:.3f}").highlight_min(axis=0, color="rgba(42,120,214,.18)"),
-                     width="stretch")
-        hist = t.loc["Historical average", "RMSE (per cell)"]
-        orac = t.loc["Oracle (true rate)", "RMSE (per cell)"]
-        best = t.loc["Bi-LSTM + GRU", "RMSE (per cell)"]
-        st.info(f"Bi-LSTM + GRU closes **{(hist - best) / (hist - orac) * 100:.0f}%** of the gap between the "
-                "historical-average baseline and the theoretical best (oracle). It beats the average because it "
-                "sees *today's* level: whether occupancy is high, the peak is early, or there's a conference.")
-
-        pred = np.load(ARTIFACTS / "forecast" / "test_predictions.npz")
-        n_show = BINS_PER_DAY * 2
-        x = pred["idx"][:n_show]
-        xt = [f"{DAYS[(i // BINS_PER_DAY) % 7]} {hhmm((i % BINS_PER_DAY) * BIN_S)}" for i in x]
-        which = st.radio("Show", ["Whole building", "Lobby, going up"], horizontal=True)
-        col = slice(None) if which == "Whole building" else [0]
-        fig = go.Figure()
-        fig.add_scatter(x=xt, y=pred["actual"][:n_show, col].sum(1), name="Actual", mode="lines",
-                        line=dict(color=NEUTRAL, width=1))
-        for name, color, dash in [("Historical average", SLOTS[3], "dot"), ("Bi-LSTM + GRU", SLOTS[0], "solid"),
-                                  ("true_rate", SLOTS[2], "dash")]:
-            fig.add_scatter(x=xt, y=pred[name][:n_show, col].sum(1), mode="lines",
-                            name="Oracle (true rate)" if name == "true_rate" else name,
-                            line=dict(color=color, width=2, dash=dash))
-        fig.update_layout(title="Forecast vs actual: first two test days", hovermode="x unified",
-                          yaxis_title="calls / 5 min")
-        fig.update_xaxes(nticks=12)
-        st.plotly_chart(style(fig, 400), width="stretch")
-
-        fig = go.Figure()
-        for (name, h), color in zip(metrics["history"].items(), SLOTS):
-            ep = [r["epoch"] for r in h]
-            fig.add_scatter(x=ep, y=[r["train_loss"] for r in h], name=f"{name} train", mode="lines",
-                            line=dict(color=color, width=2, dash="dot"))
-            fig.add_scatter(x=ep, y=[r["val_loss"] for r in h], name=f"{name} validation", mode="lines",
-                            line=dict(color=color, width=2))
-        fig.update_layout(title="Training history (Poisson NLL)", xaxis_title="epoch", hovermode="x unified")
-        st.plotly_chart(style(fig, 340), width="stretch")
-
-    st.subheader("Active-learning RNN: adapting when the building changes")
-    al = load_json(ARTIFACTS / "forecast" / "active_learning.json")
-    if al is None:
-        st.warning("Run `python -m scripts.active_learning` first.")
-    else:
-        st.markdown(f"""
-From day {DRIFT[0]} a new company fills floors 13–15 and floors 2–3 empty out. The LSTM was trained on the old
-building. Each day it may learn from only **{al['budget']} of the day's 288 windows**. Which ones?
-*Active* strategies pick the windows where the model is most **uncertain**, estimated with **Monte-Carlo
-dropout** (20 stochastic forward passes, uncertainty = variance of the predictions).
-""")
-        focus = st.radio("Error on", ["Changed floors", "Whole building"], horizontal=True)
-        key = "focus_rmse" if focus == "Changed floors" else "rmse"
-        styles = {"Frozen": (NEUTRAL, "dot"), "Random": (SLOTS[1], "solid"), "Active (top-k)": (SLOTS[2], "solid"),
-                  "Active (per hour)": (SLOTS[0], "solid"), "Full retrain": (SLOTS[3], "solid"),
-                  "Oracle (true rate)": (NEUTRAL, "dash")}
-        fig = go.Figure()
-        for name, (color, dash) in styles.items():
-            vals = pd.Series([d[key] for d in al["results"][name]]).rolling(3, min_periods=1).mean()
-            fig.add_scatter(x=al["days"], y=vals, name=name, mode="lines", line=dict(color=color, width=2, dash=dash))
-        fig.update_layout(title=f"Daily RMSE after the tenant change ({focus.lower()}, 3-day rolling mean)",
-                          xaxis_title="day", yaxis_title="RMSE", hovermode="x unified")
-        st.plotly_chart(style(fig, 400), width="stretch")
-        rows = []
-        for name, days in al["results"].items():
-            r = [d[key] for d in days]
-            rows.append({"Strategy": name, "Week 1": np.mean(r[:7]), "Week 4": np.mean(r[-7:])})
-        st.dataframe(pd.DataFrame(rows).set_index("Strategy").style.format("{:.3f}"), width="stretch")
-        st.caption("Findings: naive top-k uncertainty sampling is no better than not updating at all, because it "
-                   "picks 24 near-identical windows from the same peak. Taking the most uncertain window *per hour* "
-                   "adapts fastest in week 1; random sampling catches up by week 4.")
-
 # ================================================================= RL
-with tabs[5]:
-    st.header("LSTM + RL: the machine-learning dispatcher")
+with tabs[4]:
+    st.header("LSTM + RL: the machine-learning controller")
+    st.markdown("""
+The ML controller is a **reinforcement-learning agent**: a program that learns which decisions work well by trying
+them in the simulator and seeing what they cost, rather than being told the right answer. It was trained only on
+the *training* days of the dataset, so the results in this app come from days it has never seen.
+
+It makes the same two decisions that any lift group controller has to make, which are described below. Both use one
+setting, **λ (lambda)**, which says how much we care about electricity compared with people's time. It is measured in
+seconds of waiting per watt-hour: with λ = 0.5, saving 1 Wh is worth making people wait half a second longer in total.
+We fixed λ = 0.5 before training; the chart further down shows what other values would have given.
+""")
+
+    st.subheader("Decision 1: which lift answers a call?")
+    st.markdown("""
+Whenever someone presses a hall button, the controller scores every lift and sends the one with the lowest cost:
+""")
+    st.latex(r"\text{cost}(\text{lift}) \;=\; \underbrace{\hat{w}(\text{lift})}_{\text{predicted wait (s)}}"
+             r"\;+\; \lambda \times \underbrace{\Delta E(\text{lift})}_{\text{extra energy (Wh)}}")
+    st.markdown("""
+The **predicted wait** comes from a small neural network (the *Q-network*). It looks at each lift from the caller's
+point of view: its estimated arrival time, how full it is, how many stops it has already promised, how far away it
+is, whether it is already heading this way, whether it is idle or has its doors open, and whether the call is in the
+lobby. From these it predicts how long the person will actually wait if that lift is chosen.
+
+The **extra energy** is not learned. It is calculated from the same physics as the simulator: the extra floors the lift
+would have to travel, the extra stops, and the cost of waking it if it is in standby.
+
+The network learns from experience. After each passenger boards, their real waiting time is known, and the network is
+adjusted so that next time its prediction for a similar situation is closer to what really happened. Each call is
+judged only by its own passenger's wait (in RL terms a *contextual bandit*, discount γ = 0). This keeps the learning
+simple and stable, because the choice of lift mainly affects that passenger.
+""")
+
+    st.subheader("Decision 2: what should a free lift do?")
     st.markdown(f"""
-One agent, trained by trial and error in the simulator on *training* days only, makes both group-control decisions.
-λ (seconds of waiting per Wh) says how much energy matters compared with waiting.
+When a lift has no passengers and no calls to answer, it has four options: **{" · ".join(ACTIONS)}**.
+*Stay* leaves it where it is, *standby* powers it down from 300 W to 50 W, *lobby* sends it to the ground floor, and
+*forecast hotspot* sends it to the floor where the LSTM expects the most calls (skipping floors another free lift is
+already covering). The lift decides as soon as it becomes free, and again every minute while it stays free.
 
-**1. Assignment:** a hall call arrives, which car serves it?
-* cost(car) = Q-network's predicted wait (learned) + λ × extra energy of the detour (from the physics model)
-* features per car: ETA, load, committed stops, distance, heading our way, idle / doors open, lobby call
-* learned as a contextual bandit (γ = 0): the target is the passenger's realised wait
+To choose, it looks at its own floor and whether it is in standby, at **the LSTM forecast of hall calls in the next
+5 minutes** (for the whole building, for the lobby, for its own floor and for the busiest floor), at how many other
+lifts are free or in standby, and at how many people are waiting right now.
 
-**2. Positioning:** a car is free, what should it do? **{" · ".join(ACTIONS)}**
-* state: the car's floor and standby status, **the LSTM forecast of hall calls in the next 5 minutes**
-  (building total, lobby, this floor, the busiest floor), other free / standby cars, people waiting
-* cost until the car's next decision: everyone's waiting time + λ × this car's energy
-* SMDP Q-learning (decisions at irregular times): Q(s,a) ← cost + e^(−τ/300 s) · min Q(s′,a′),
-  Double DQN, replay buffer, slowly-updated target network
+This decision is harder to learn than the first, because its effects arrive later: powering down at 07:50 saves
+energy immediately, but someone may wait longer at 08:05. Each choice is therefore charged with everything that
+happens until the lift's next decision, namely the waiting time of **everyone** in the building plus λ times the
+lift's own energy, and it is learned with Q-learning adapted to decisions that happen at irregular times (SMDP
+Q-learning):
+""")
+    st.latex(r"Q(s, a) \;\leftarrow\; C \;+\; e^{-\tau / 300\,\mathrm{s}} \cdot \min_{a'} Q(s', a')")
+    st.markdown("""
+Here $Q(s, a)$ is the network's estimate of the total future cost of taking action $a$ in situation $s$. $C$ is the
+cost actually paid until the next decision, $\\tau$ is how many seconds that took, and $s'$ is the situation at the next
+decision. The factor $e^{-\\tau/300\\,\\mathrm{s}}$ makes costs in the near future count almost fully and costs far ahead
+count less (after 5 minutes they count about 37%). Three standard techniques keep the training stable: a **replay
+buffer** that reuses past experience, a slowly updated **target network**, and **Double DQN**, which avoids
+over-optimistic estimates.
+""")
+
+    st.subheader("How it was trained")
+    st.markdown("""
+Each training run plays 250 simulated days, picked at random from the training days. At first the controller tries
+random actions 30% of the time so that it discovers options it would otherwise never try (for example, standby at
+night); this falls to 2% as it learns. Every 10 days it is tested on 3 validation days, and the version with the lowest
+waiting + λ × energy is kept. To check that the result is not a lucky run, the whole training was repeated 5 times
+with different random seeds.
+""")
+
+    st.subheader("Choosing λ, and does the forecast help?")
+    st.markdown("""
+The chart below places every controller by its full-day energy use (left is better) and average wait (lower is
+better), so the best place to be is the bottom-left corner. The blue line shows what the ML controller does at
+different values of λ: small values buy shorter waits with more energy, large values save energy but make people
+wait longer. The two extra markers answer whether the LSTM forecast is useful: the same controller was trained
+once with **no forecast** (it only sees the calls of the last 5 minutes) and once with a **perfect forecast** (the
+true demand from the traffic formula).
 """)
     bench = ARTIFACTS / "bench" / "results.csv"
     if bench.exists():
@@ -490,14 +557,20 @@ One agent, trained by trial and error in the simulator on *training* days only, 
         fig.update_layout(title="Trade-off: full day, mean of 5 test days (down-left is better)",
                           xaxis_title="energy (kWh)", yaxis_title="average wait (s)")
         st.plotly_chart(style(fig, 460), width="stretch")
-        st.caption("Ablations at the same λ: *no forecast* sees only the last 5 minutes of calls; "
-                   "*oracle* sees the true demand rate, the best any forecast could do. The λ = 0.5 agents were "
-                   "each trained with 5 seeds: big markers are the mean, faint dots are individual seeds.")
+        st.caption("For λ = 0.5 and the two forecast variants, the large marker is the average of the 5 training runs "
+                   "and the faint dots are the individual runs, so you can see how much the result varies. All five "
+                   "runs of the ML controller beat Nearest Car on both waiting and energy. Without a forecast the "
+                   "controller still beats Nearest Car, so most of the gain comes from RL; the LSTM adds a smaller "
+                   "improvement, and a perfect forecast shows there is more to gain from better forecasting.")
 
     runs = {p.stem: load_json(p) for p in sorted((ARTIFACTS / "rl").glob("*_lam*.json"))}
     if not runs:
         st.warning("Run `python -m scripts.train_rl` first.")
     else:
+        st.subheader("Inside one training run")
+        st.markdown("Pick a training run to see how it improved over time. The two charts show its waiting time "
+                    "and energy on the validation days, measured every 10 training days, with Nearest Car as a "
+                    "dashed reference line.")
         labels = {k: f'{algo_name(v["source"], v["lam"])} · seed {v["seed"]}' for k, v in runs.items()}
         main = f"{MAIN} · seed 0"
         key = st.selectbox("Training run", list(runs), format_func=labels.get,
@@ -514,9 +587,5 @@ One agent, trained by trial and error in the simulator on *training* days only, 
                           annotation_position="top left", row=1, col=col + 1)
         fig.update_xaxes(title_text="episode (one simulated training day)")
         st.plotly_chart(style(fig, 360), width="stretch")
-        acts = np.array(curve.actions.tolist())[-20:].sum(axis=0)
-        fig = go.Figure(go.Bar(x=ACTIONS, y=acts / acts.sum() * 100, marker_color=ML_COLOR))
-        fig.update_layout(title="What free cars chose (last 20 training days, % of decisions)", yaxis_title="%")
-        st.plotly_chart(style(fig, 300), width="stretch")
-        st.caption("The best validation checkpoint (lowest wait + λ·energy) is kept. "
-                   "Training days include ε-greedy exploration (random actions).")
+        st.caption("The curves are noisy because every training day is different and the controller is still "
+                   "exploring, which is why the best version on the validation days is kept rather than the last.")

@@ -1,19 +1,36 @@
-# SmartLift: classical vs machine-learning lift dispatching
+# An Approach Towards Building a Smart Lift System Using Machine Learning
 
-A revamp of our B.Tech major project *"An Approach Towards Building a Smart Lift System Using Machine
-Learning"* (SPIT, 2025). The original slides and paper are in [`legacy/`](legacy/).
+Have you ever noticed that waiting for a lift takes longer at certain hours, or wondered why the lifts are parked
+where they are? Behind the panel, a *group controller* decides which lift answers every call, usually with a fixed
+rule such as "send the nearest lift". That rule reacts to calls as they come in. It can't see the morning rush
+coming, and it keeps idle lifts powered on all night.
 
-**Question:** can machine learning make a group of lifts serve people faster *and* use less energy?
+This project asks whether lifts can **learn** to do better. An **LSTM** forecasts how many calls each floor will make in
+the next 5 minutes, and a **reinforcement-learning** controller uses that forecast to decide which lift answers each
+call, where free lifts should wait, and when to power them down. It learns by trial and error in a simulated
+16-floor office with 4 lifts, and is then tested against four classical controllers.
 
-Everything runs on one simulator, so every algorithm (classical or ML) is scored on exactly the same
-passengers, on test days the ML models never saw.
+**Result:** over a full working day, the ML controller cut the average wait from **13.5 s to 11.0 s (−19%)** and the
+lifts' energy use from **125 to 119 kWh (−4%)** compared with the best classical controller (Nearest Car). It was tested
+on 5 days of traffic it never saw during training, and it was trained 5 separate times: every version beat Nearest
+Car on both waiting and energy.
+
+Every controller, classical or ML, runs in the same simulator on exactly the same passengers, so the only
+difference between the results is the decisions.
 
 ```
-synthetic traffic ──► simulator ◄──► dispatcher ──► metrics (wait, journey, kWh)
-        │                         (classical rules, or LSTM + RL)
-        │                               ▲
-        └──► hall-call counts ──► LSTM forecast of the next 5 minutes
+                   synthetic traffic
+           passengers │          │ past calls
+                      ▼          ▼
+results ◄── lift simulator      LSTM forecast (next 5 minutes)
+              │      ▲               │
+  where lifts │      │ which lift    │
+  are, who is ▼      │ goes where    ▼
+  waiting    controller: classical rules  OR  ML controller (LSTM + RL)
 ```
+
+The simulator was written for this project; its design was inspired by
+[fourjr/elevator-simulator](https://github.com/fourjr/elevator-simulator).
 
 ## Quick start
 
@@ -37,7 +54,7 @@ python -m scripts.run_benchmark              # ~4 min: all algorithms × scenari
 | Simulator | `smartlift/sim/core.py` | 1 tick = 1 s. Lifts move, stop, open doors, board/alight (capacity limits), standby. Asks a *dispatcher* for every decision |
 | Energy | `smartlift/sim/energy.py` | Counterweight physics (only the imbalance is lifted), friction, acceleration, doors, base-load/standby power, split like ISO 25745-2 into running vs non-running energy |
 | Classical | `smartlift/dispatch/classical.py` | FCFS, LOOK (collective), Nearest Car (ETA group control), Destination Dispatch |
-| Forecasting | `smartlift/ml/forecast.py` | LSTM and Bi-LSTM+GRU (architectures from the paper), Poisson loss, MC dropout, baselines |
+| Forecasting | `smartlift/ml/forecast.py` | LSTM and Bi-LSTM+GRU, Poisson loss, MC dropout, baselines |
 | Active learning | `smartlift/ml/active.py` | Uncertainty-driven fine-tuning when the building changes |
 | LSTM + RL | `smartlift/ml/rl.py` | The ML dispatcher: learns call assignment and where free cars go (stay / standby / lobby / forecast hotspot), trading waiting against energy with a weight λ |
 | Benchmark | `smartlift/bench.py` | Algorithms × scenarios × test days |
@@ -54,9 +71,7 @@ python -m scripts.run_benchmark              # ~4 min: all algorithms × scenari
 | Classical | LOOK (collective) | Every car sweeps up and down on its own, no coordination |
 | Classical | Nearest Car (ETA) | Group control: each call goes to the car with the lowest estimated arrival time |
 | Classical | Destination Dispatch | Passengers enter their floor; people going to the same floors share a car |
-| ML | **LSTM + RL** | One reinforcement-learning agent makes both decisions (below), at several λ |
-| Ablation | RL, no forecast | Same agent, but it only sees the last 5 minutes of calls instead of the LSTM forecast |
-| Ablation | RL + oracle forecast | Same agent with the true demand rate: the best any forecast could do |
+| ML | **LSTM + RL (λ = 0.5)** | One reinforcement-learning agent makes both decisions (below) |
 
 **How LSTM + RL works** (`smartlift/ml/rl.py`). λ is in seconds of waiting per Wh: how much energy matters.
 
@@ -74,8 +89,7 @@ Trained on whole simulated *training* days (250 per agent); the checkpoint with 
 ## Results
 
 Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and every scenario are in the app).
-λ = 0.5 is the headline setting. The three λ = 0.5 agents (LSTM + RL and both ablations) were each trained with
-**5 random seeds**, and their rows are the mean over all 5 seeds × 5 days (no seed was picked).
+LSTM + RL is also averaged over **5 training seeds** (no seed was picked).
 
 **Full day**
 
@@ -85,13 +99,7 @@ Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and e
 | LOOK (collective) | 15.4 | 53 | 45.4 | 198.1 |
 | Nearest Car (ETA) | 13.5 | 43 | 46.4 | 124.6 |
 | Destination Dispatch | 14.1 | 47 | 47.5 | 119.9 |
-| LSTM + RL (λ=0) | 10.3 | 36 | 40.0 | 161.8 |
-| LSTM + RL (λ=0.25) | 10.4 | 36 | 40.2 | 128.5 |
 | **LSTM + RL (λ=0.5)** | 11.0 | 36 | 42.6 | 119.1 |
-| LSTM + RL (λ=1) | 15.4 | 44 | 49.0 | 100.5 |
-| LSTM + RL (λ=2) | 20.7 | 63 | 56.7 | 87.2 |
-| RL, no forecast (λ=0.5) | 11.7 | 38 | 43.4 | 116.5 |
-| RL + oracle forecast (λ=0.5) | 11.0 | 36 | 42.5 | 116.3 |
 
 **Morning up-peak (07:30–10:00)**
 
@@ -101,15 +109,26 @@ Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and e
 | LOOK (collective) | 6.7 | 27 | 47.8 | 31.8 |
 | Nearest Car (ETA) | 12.1 | 30 | 65.7 | 19.3 |
 | Destination Dispatch | 11.8 | 30 | 65.5 | 19.3 |
-| LSTM + RL (λ=0) | 5.4 | 22 | 46.4 | 35.1 |
-| LSTM + RL (λ=0.25) | 6.0 | 25 | 47.5 | 27.8 |
 | **LSTM + RL (λ=0.5)** | 7.8 | 27 | 55.7 | 22.6 |
-| LSTM + RL (λ=1) | 13.5 | 38 | 66.7 | 17.8 |
-| LSTM + RL (λ=2) | 17.5 | 47 | 72.5 | 16.4 |
-| RL, no forecast (λ=0.5) | 8.0 | 28 | 55.3 | 22.7 |
-| RL + oracle forecast (λ=0.5) | 7.2 | 25 | 54.7 | 22.9 |
 
-**Seed robustness** (full day, λ = 0.5, mean ± std over the 5 training seeds)
+### Experiments behind the LSTM + RL design
+
+These are not separate algorithms; they justify the choices above.
+
+**Choosing λ** (full day, one seed each; Nearest Car: 13.5 s, 124.6 kWh). λ is the price of
+energy in seconds of waiting per Wh. Smaller λ waits less but spends more energy; larger λ saves energy but waits longer.
+λ = 0.5 was fixed before training (`MAIN_LAM` in `rl.py`), not picked from test results, and it is
+the only value that beats Nearest Car on both.
+
+| λ | Avg wait (s) | Energy (kWh) |
+|---:|---:|---:|
+| 0 | 10.3 | 161.8 |
+| 0.25 | 10.4 | 128.5 |
+| **0.5 (chosen; mean of 5 seeds)** | 11.0 | 119.1 |
+| 1 | 15.4 | 100.5 |
+| 2 | 20.7 | 87.2 |
+
+**Does the forecast help? Ablations** (full day, λ = 0.5, mean ± std over 5 training seeds). The same agent with no forecast (only the last 5 minutes of calls) and with a perfect (oracle) forecast:
 
 | Agent | Avg wait (s) | Energy (kWh) | Seeds better than Nearest Car on both |
 |---|---:|---:|---:|
@@ -139,7 +158,7 @@ Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and e
    uncoordinated LOOK, whose cars all chase the same calls.
 4. **The sequence models are the best forecasters.** Bi-LSTM+GRU closes ~79% of the gap between the historical
    average and the oracle noise floor, because it sees *today's* level (occupancy, early peak, a conference).
-   It edges out the plain LSTM, the same ordering the paper claimed but with a far smaller gap.
+   It edges out the plain LSTM, but only by a small margin.
 5. **Most of the dispatching gain comes from RL; the forecast adds a smaller, consistent extra.** All three λ = 0.5
    agents beat Nearest Car, even the one without a forecast. Compared with that no-forecast agent, the LSTM agent has
    a lower combined cost (wait + λ·energy) in **4 of 5 seeds**: it waits 0.7 s less for 2.6 kWh more, and its
@@ -150,16 +169,6 @@ Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and e
      near-duplicates from the same peak.
    * Picking the most uncertain window *per hour* adapts fastest in week 1.
    * Random sampling catches up by week 4.
-
-## Changes from the original project
-
-| Original | Revamp |
-|---|---|
-| Single-lift sim, lifts run one after another | Multi-lift tick simulator, all lifts run concurrently, with tests |
-| Power chart drawn from straight lines + noise (`legacy/code/C.py`) | Energy measured from a physical model inside the simulation |
-| LSTM / Bi-LSTM+GRU / active RNN only described | Implemented, trained, evaluated against baselines and an oracle |
-| Tabular Q-learning with random up/down moves | LSTM + RL: learned call assignment and car positioning, beats the best classical method on wait and energy |
-| No visual interface ("further work") | Streamlit app |
 
 ## Limitations
 
