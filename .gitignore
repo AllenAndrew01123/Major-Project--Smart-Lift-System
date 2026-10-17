@@ -4,5 +4,5 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 artifacts/forecast/active_learning.log
-# third-party reference code (fourjr/elevator-simulator, no license) kept locally only
-legacy/fourjr-elevator-simulator/
+# earlier project files and third-party reference code, kept locally only
+legacy/
