@@ -1,19 +1,37 @@
 # SmartLift: classical vs machine-learning lift dispatching
 
-A revamp of our B.Tech major project *"An Approach Towards Building a Smart Lift System Using Machine
-Learning"* (SPIT, 2025). The original slides and paper are in [`legacy/`](legacy/).
+Have you ever noticed that waiting for a lift takes longer at certain hours, or wondered why the lifts are parked
+where they are? Behind the panel, a *group controller* decides which lift answers every call, usually with a fixed
+rule such as "send the nearest lift". That rule reacts to calls as they come in. It can't see the morning rush
+coming, and it keeps idle lifts powered on all night.
 
-**Question:** can machine learning make a group of lifts serve people faster *and* use less energy?
+This project asks whether lifts can **learn** to do better. An **LSTM** forecasts how many calls each floor will make in
+the next 5 minutes, and a **reinforcement-learning** controller uses that forecast to decide which lift answers each
+call, where free lifts should wait, and when to power them down. It learns by trial and error in a simulated
+16-floor office with 4 lifts, and is then tested against four classical controllers.
 
-Everything runs on one simulator, so every algorithm (classical or ML) is scored on exactly the same
-passengers, on test days the ML models never saw.
+**Result:** over a full working day, the ML controller cut the average wait from **13.5 s to 11.0 s (−19%)** and the
+lifts' energy use from **125 to 119 kWh (−4%)** compared with the best classical controller (Nearest Car). It was tested
+on 5 days of traffic it never saw during training, and it was trained 5 separate times: every version beat Nearest
+Car on both waiting and energy.
+
+Every controller, classical or ML, runs in the same simulator on exactly the same passengers, so the only
+difference between the results is the decisions.
 
 ```
-synthetic traffic ──► simulator ◄──► dispatcher ──► metrics (wait, journey, kWh)
-        │                         (classical rules, or LSTM + RL)
-        │                               ▲
-        └──► hall-call counts ──► LSTM forecast of the next 5 minutes
+                   synthetic traffic
+           passengers │          │ past calls
+                      ▼          ▼
+results ◄── lift simulator      LSTM forecast (next 5 minutes)
+              │      ▲               │
+  where lifts │      │ which lift    │
+  are, who is ▼      │ goes where    ▼
+  waiting    controller: classical rules  OR  ML controller (LSTM + RL)
 ```
+
+This work builds on our B.Tech major project *"An Approach Towards Building a Smart Lift System Using Machine
+Learning"* (SPIT, 2025). The original slides, paper and code are in [`legacy/`](legacy/), and the differences are
+listed under [Changes from the original project](#changes-from-the-original-project).
 
 ## Quick start
 
