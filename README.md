@@ -1,4 +1,4 @@
-# SmartLift: classical vs machine-learning lift dispatching
+# An Approach Towards Building a Smart Lift System Using Machine Learning
 
 Have you ever noticed that waiting for a lift takes longer at certain hours, or wondered why the lifts are parked
 where they are? Behind the panel, a *group controller* decides which lift answers every call, usually with a fixed
@@ -29,9 +29,8 @@ results ◄── lift simulator      LSTM forecast (next 5 minutes)
   waiting    controller: classical rules  OR  ML controller (LSTM + RL)
 ```
 
-This work builds on our B.Tech major project *"An Approach Towards Building a Smart Lift System Using Machine
-Learning"* (SPIT, 2025). The original slides, paper and code are in [`legacy/`](legacy/), and the differences are
-listed under [Changes from the original project](#changes-from-the-original-project).
+The simulator was written for this project; its design was inspired by
+[fourjr/elevator-simulator](https://github.com/fourjr/elevator-simulator).
 
 ## Quick start
 
@@ -55,7 +54,7 @@ python -m scripts.run_benchmark              # ~4 min: all algorithms × scenari
 | Simulator | `smartlift/sim/core.py` | 1 tick = 1 s. Lifts move, stop, open doors, board/alight (capacity limits), standby. Asks a *dispatcher* for every decision |
 | Energy | `smartlift/sim/energy.py` | Counterweight physics (only the imbalance is lifted), friction, acceleration, doors, base-load/standby power, split like ISO 25745-2 into running vs non-running energy |
 | Classical | `smartlift/dispatch/classical.py` | FCFS, LOOK (collective), Nearest Car (ETA group control), Destination Dispatch |
-| Forecasting | `smartlift/ml/forecast.py` | LSTM and Bi-LSTM+GRU (architectures from the paper), Poisson loss, MC dropout, baselines |
+| Forecasting | `smartlift/ml/forecast.py` | LSTM and Bi-LSTM+GRU, Poisson loss, MC dropout, baselines |
 | Active learning | `smartlift/ml/active.py` | Uncertainty-driven fine-tuning when the building changes |
 | LSTM + RL | `smartlift/ml/rl.py` | The ML dispatcher: learns call assignment and where free cars go (stay / standby / lobby / forecast hotspot), trading waiting against energy with a weight λ |
 | Benchmark | `smartlift/bench.py` | Algorithms × scenarios × test days |
@@ -159,7 +158,7 @@ the only value that beats Nearest Car on both.
    uncoordinated LOOK, whose cars all chase the same calls.
 4. **The sequence models are the best forecasters.** Bi-LSTM+GRU closes ~79% of the gap between the historical
    average and the oracle noise floor, because it sees *today's* level (occupancy, early peak, a conference).
-   It edges out the plain LSTM, the same ordering the paper claimed but with a far smaller gap.
+   It edges out the plain LSTM, but only by a small margin.
 5. **Most of the dispatching gain comes from RL; the forecast adds a smaller, consistent extra.** All three λ = 0.5
    agents beat Nearest Car, even the one without a forecast. Compared with that no-forecast agent, the LSTM agent has
    a lower combined cost (wait + λ·energy) in **4 of 5 seeds**: it waits 0.7 s less for 2.6 kWh more, and its
@@ -170,16 +169,6 @@ the only value that beats Nearest Car on both.
      near-duplicates from the same peak.
    * Picking the most uncertain window *per hour* adapts fastest in week 1.
    * Random sampling catches up by week 4.
-
-## Changes from the original project
-
-| Original | Revamp |
-|---|---|
-| Single-lift sim, lifts run one after another | Multi-lift tick simulator, all lifts run concurrently, with tests |
-| Power chart drawn from straight lines + noise (`legacy/code/C.py`) | Energy measured from a physical model inside the simulation |
-| LSTM / Bi-LSTM+GRU / active RNN only described | Implemented, trained, evaluated against baselines and an oracle |
-| Tabular Q-learning with random up/down moves | LSTM + RL: learned call assignment and car positioning, beats the best classical method on wait and energy |
-| No visual interface ("further work") | Streamlit app |
 
 ## Limitations
 

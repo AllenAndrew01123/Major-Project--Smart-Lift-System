@@ -4,7 +4,7 @@ Task: given the last W five-minute bins of hall calls (per floor and direction),
 predict the expected number of calls per floor and direction in the *next* bin.
 That forecast is part of what the LSTM + RL dispatcher sees when it positions free cars.
 
-Models (the first two architectures are the ones from the original paper):
+Models:
   * LSTM            LSTM(128) -> Dropout(0.2) -> LSTM(64) -> Dropout(0.2) -> Dense
   * Bi-LSTM + GRU   BiLSTM(128) -> Dropout(0.2) -> GRU(64) -> Dropout(0.2) -> Dense
 Baselines:

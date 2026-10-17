@@ -1,6 +1,6 @@
 """Active-learning RNN: adapting the forecaster when the building changes.
 
-Scenario (from the paper): a new company moves into the top floors. A model trained
+Scenario: a new company moves into the top floors. A model trained
 on the old traffic is now wrong for those floors. Each day we may spend a small
 *budget* of k training samples (windows) to update the model. Which k?
 
