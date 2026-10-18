@@ -156,7 +156,7 @@ trial and error in a simulated building (**reinforcement learning**), then face 
                         help="The ML controller was trained 5 times from scratch, with different random seeds; each version is counted.")
             how_many = "every version" if wins == len(seeds) else f"{wins} of the {len(seeds)} versions"
             st.markdown("**In short: people wait less, and the lifts use less electricity.** We tested this on "
-                        f"5 days of traffic the ML controller had never seen. We also trained it {len(seeds)} separate "
+                        f"all {full.day.nunique()} test weekdays, traffic the ML controller had never seen. We also trained it {len(seeds)} separate "
                         f"times, and {how_many} beat Nearest Car on both waiting and energy. Use the tabs above to run "
                         "the algorithms yourself or watch the lifts move.")
 
@@ -330,7 +330,7 @@ with tabs[2]:
 
     bench = ARTIFACTS / "bench" / "results.csv"
     if bench.exists():
-        with st.expander(f"Saved benchmark for {scenario}: mean ± std over all 5 test weekdays "
+        with st.expander(f"Saved benchmark for {scenario}: mean ± std over all 20 test weekdays "
                          "(default building; LSTM + RL also over 5 training seeds)"):
             r = pd.read_csv(bench)
             r = r[(r.scenario == scenario) & r.algorithm.isin(ALGOS)]
@@ -549,7 +549,7 @@ true demand from the traffic formula).
         fig.add_scatter(x=classic.energy_kwh, y=classic.avg_wait_s, mode="markers+text", name="classical",
                         text=list(classic.index), textposition="bottom center",
                         marker=dict(size=10, color=CLASSIC_COLOR))
-        fig.update_layout(title="Trade-off: full day, mean of 5 test days (down-left is better)",
+        fig.update_layout(title="Trade-off: full day, mean of 20 test weekdays (down-left is better)",
                           xaxis_title="energy (kWh)", yaxis_title="average wait (s)")
         st.plotly_chart(style(fig, 460), width="stretch")
         st.caption("For λ = 0.5 and the two forecast variants, the large marker is the average of the 5 training runs "
