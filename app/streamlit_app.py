@@ -1,5 +1,4 @@
 """SmartLift - interactive front end.   Run:  streamlit run app/streamlit_app.py"""
-import json
 import math
 import sys
 from dataclasses import replace
@@ -76,10 +75,6 @@ def simulate(n_lifts, capacity, algo, scenario, day, record_every=0):
     trips = pd.DataFrame([(p.t_arrive, p.origin, p.dest, p.lift) for p in sim.done],
                          columns=["t", "origin", "dest", "lift"])
     return sim.metrics(), waits, snaps, trips
-
-
-def load_json(path):
-    return json.loads(path.read_text()) if path.exists() else None
 
 
 # ---------------------------------------------------------------- per-tab settings
@@ -562,30 +557,3 @@ true demand from the traffic formula).
                    "runs of the ML controller beat Nearest Car on both waiting and energy. Without a forecast the "
                    "controller still beats Nearest Car, so most of the gain comes from RL; the LSTM adds a smaller "
                    "improvement, and a perfect forecast shows there is more to gain from better forecasting.")
-
-    runs = {p.stem: load_json(p) for p in sorted((ARTIFACTS / "rl").glob("*_lam*.json"))}
-    if not runs:
-        st.warning("Run `python -m scripts.train_rl` first.")
-    else:
-        st.subheader("Inside one training run")
-        st.markdown("Pick a training run to see how it improved over time. The two charts show its waiting time "
-                    "and energy on the validation days, measured every 10 training days, with Nearest Car as a "
-                    "dashed reference line.")
-        labels = {k: f'{algo_name(v["source"], v["lam"])} · seed {v["seed"]}' for k, v in runs.items()}
-        main = f"{MAIN} · seed 0"
-        key = st.selectbox("Training run", list(runs), format_func=labels.get,
-                           index=list(labels.values()).index(main) if main in labels.values() else 0)
-        info = runs[key]
-        curve = pd.DataFrame(info["curve"])
-        val = curve.dropna(subset=["val_wait_s"])
-        base = info["nearest_car_val"]
-        fig = make_subplots(rows=1, cols=2, subplot_titles=["Validation wait (s)", "Validation energy (kWh)"])
-        for col, (k, b) in enumerate([("val_wait_s", base["val_wait_s"]), ("val_energy_kwh", base["val_energy_kwh"])]):
-            fig.add_scatter(x=val.episode, y=val[k], mode="lines+markers", line=dict(color=ML_COLOR, width=2),
-                            showlegend=False, row=1, col=col + 1)
-            fig.add_hline(y=b, line=dict(color=NEUTRAL, dash="dash"), annotation_text="Nearest Car",
-                          annotation_position="top left", row=1, col=col + 1)
-        fig.update_xaxes(title_text="episode (one simulated training day)")
-        st.plotly_chart(style(fig, 360), width="stretch")
-        st.caption("The curves are noisy because every training day is different and the controller is still "
-                   "exploring, which is why the best version on the validation days is kept rather than the last.")
