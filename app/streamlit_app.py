@@ -1,5 +1,4 @@
 """SmartLift - interactive front end.   Run:  streamlit run app/streamlit_app.py"""
-import json
 import math
 import sys
 from dataclasses import replace
@@ -76,10 +75,6 @@ def simulate(n_lifts, capacity, algo, scenario, day, record_every=0):
     trips = pd.DataFrame([(p.t_arrive, p.origin, p.dest, p.lift) for p in sim.done],
                          columns=["t", "origin", "dest", "lift"])
     return sim.metrics(), waits, snaps, trips
-
-
-def load_json(path):
-    return json.loads(path.read_text()) if path.exists() else None
 
 
 # ---------------------------------------------------------------- per-tab settings
@@ -161,7 +156,7 @@ trial and error in a simulated building (**reinforcement learning**), then face 
                         help="The ML controller was trained 5 times from scratch, with different random seeds; each version is counted.")
             how_many = "every version" if wins == len(seeds) else f"{wins} of the {len(seeds)} versions"
             st.markdown("**In short: people wait less, and the lifts use less electricity.** We tested this on "
-                        f"5 days of traffic the ML controller had never seen. We also trained it {len(seeds)} separate "
+                        f"all {full.day.nunique()} test weekdays, traffic the ML controller had never seen. We also trained it {len(seeds)} separate "
                         f"times, and {how_many} beat Nearest Car on both waiting and energy. Use the tabs above to run "
                         "the algorithms yourself or watch the lifts move.")
 
@@ -335,7 +330,7 @@ with tabs[2]:
 
     bench = ARTIFACTS / "bench" / "results.csv"
     if bench.exists():
-        with st.expander(f"Saved benchmark for {scenario}: mean ± std over all 5 test weekdays "
+        with st.expander(f"Saved benchmark for {scenario}: mean ± std over all 20 test weekdays "
                          "(default building; LSTM + RL also over 5 training seeds)"):
             r = pd.read_csv(bench)
             r = r[(r.scenario == scenario) & r.algorithm.isin(ALGOS)]
@@ -554,7 +549,7 @@ true demand from the traffic formula).
         fig.add_scatter(x=classic.energy_kwh, y=classic.avg_wait_s, mode="markers+text", name="classical",
                         text=list(classic.index), textposition="bottom center",
                         marker=dict(size=10, color=CLASSIC_COLOR))
-        fig.update_layout(title="Trade-off: full day, mean of 5 test days (down-left is better)",
+        fig.update_layout(title="Trade-off: full day, mean of 20 test weekdays (down-left is better)",
                           xaxis_title="energy (kWh)", yaxis_title="average wait (s)")
         st.plotly_chart(style(fig, 460), width="stretch")
         st.caption("For λ = 0.5 and the two forecast variants, the large marker is the average of the 5 training runs "
@@ -562,30 +557,3 @@ true demand from the traffic formula).
                    "runs of the ML controller beat Nearest Car on both waiting and energy. Without a forecast the "
                    "controller still beats Nearest Car, so most of the gain comes from RL; the LSTM adds a smaller "
                    "improvement, and a perfect forecast shows there is more to gain from better forecasting.")
-
-    runs = {p.stem: load_json(p) for p in sorted((ARTIFACTS / "rl").glob("*_lam*.json"))}
-    if not runs:
-        st.warning("Run `python -m scripts.train_rl` first.")
-    else:
-        st.subheader("Inside one training run")
-        st.markdown("Pick a training run to see how it improved over time. The two charts show its waiting time "
-                    "and energy on the validation days, measured every 10 training days, with Nearest Car as a "
-                    "dashed reference line.")
-        labels = {k: f'{algo_name(v["source"], v["lam"])} · seed {v["seed"]}' for k, v in runs.items()}
-        main = f"{MAIN} · seed 0"
-        key = st.selectbox("Training run", list(runs), format_func=labels.get,
-                           index=list(labels.values()).index(main) if main in labels.values() else 0)
-        info = runs[key]
-        curve = pd.DataFrame(info["curve"])
-        val = curve.dropna(subset=["val_wait_s"])
-        base = info["nearest_car_val"]
-        fig = make_subplots(rows=1, cols=2, subplot_titles=["Validation wait (s)", "Validation energy (kWh)"])
-        for col, (k, b) in enumerate([("val_wait_s", base["val_wait_s"]), ("val_energy_kwh", base["val_energy_kwh"])]):
-            fig.add_scatter(x=val.episode, y=val[k], mode="lines+markers", line=dict(color=ML_COLOR, width=2),
-                            showlegend=False, row=1, col=col + 1)
-            fig.add_hline(y=b, line=dict(color=NEUTRAL, dash="dash"), annotation_text="Nearest Car",
-                          annotation_position="top left", row=1, col=col + 1)
-        fig.update_xaxes(title_text="episode (one simulated training day)")
-        st.plotly_chart(style(fig, 360), width="stretch")
-        st.caption("The curves are noisy because every training day is different and the controller is still "
-                   "exploring, which is why the best version on the validation days is kept rather than the last.")

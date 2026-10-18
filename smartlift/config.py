@@ -1,7 +1,3 @@
-"""Building, timing and energy parameters shared by every part of the project.
-
-One simulation tick = 1 second.
-"""
 from dataclasses import dataclass
 
 

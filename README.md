@@ -10,10 +10,10 @@ the next 5 minutes, and a **reinforcement-learning** controller uses that foreca
 call, where free lifts should wait, and when to power them down. It learns by trial and error in a simulated
 16-floor office with 4 lifts, and is then tested against four classical controllers.
 
-**Result:** over a full working day, the ML controller cut the average wait from **13.5 s to 11.0 s (−19%)** and the
-lifts' energy use from **125 to 119 kWh (−4%)** compared with the best classical controller (Nearest Car). It was tested
-on 5 days of traffic it never saw during training, and it was trained 5 separate times: every version beat Nearest
-Car on both waiting and energy.
+**Result:** over a full working day, the ML controller cut the average wait from **13.0 s to 10.3 s (−21%)** and the
+lifts' energy use from **120 to 115 kWh (−5%)** compared with the best classical controller (Nearest Car). It was tested
+on all 20 test weekdays, traffic it never saw during training, and it was trained 5 separate times: every
+version beat Nearest Car on both waiting and energy, on every one of the 20 days.
 
 Every controller, classical or ML, runs in the same simulator on exactly the same passengers, so the only
 difference between the results is the decisions.
@@ -43,7 +43,7 @@ pytest                                       # tests
 python -m scripts.train_forecasters          # ~1 min: train + evaluate LSTM, Bi-LSTM+GRU
 python -m scripts.active_learning            # ~5 min: active-learning experiment
 python -m scripts.train_rl                   # ~35 min: 19 LSTM + RL agents in parallel (λ sweep + 5-seed ablations)
-python -m scripts.run_benchmark              # ~4 min: all algorithms × scenarios × 5 test days
+python -m scripts.run_benchmark              # ~16 min: all algorithms × scenarios × 20 test weekdays
 ```
 
 ## What's inside
@@ -88,54 +88,54 @@ Trained on whole simulated *training* days (250 per agent); the checkpoint with 
 
 ## Results
 
-Mean of 5 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and every scenario are in the app).
+Mean of all 20 unseen test weekdays (`artifacts/bench/results.csv`; mean ± std and every scenario are in the app).
 LSTM + RL is also averaged over **5 training seeds** (no seed was picked).
 
 **Full day**
 
 | Algorithm | Avg wait (s) | P95 wait (s) | Avg journey (s) | Energy (kWh) |
 |---|---:|---:|---:|---:|
-| FCFS | 30.3 | 97 | 55.4 | 170.1 |
-| LOOK (collective) | 15.4 | 53 | 45.4 | 198.1 |
-| Nearest Car (ETA) | 13.5 | 43 | 46.4 | 124.6 |
-| Destination Dispatch | 14.1 | 47 | 47.5 | 119.9 |
-| **LSTM + RL (λ=0.5)** | 11.0 | 36 | 42.6 | 119.1 |
+| FCFS | 27.6 | 88 | 51.9 | 164.4 |
+| LOOK (collective) | 14.4 | 49 | 43.2 | 194.9 |
+| Nearest Car (ETA) | 13.0 | 41 | 44.8 | 120.4 |
+| Destination Dispatch | 13.4 | 43 | 45.8 | 115.6 |
+| **LSTM + RL (λ=0.5)** | 10.3 | 34 | 40.8 | 114.7 |
 
 **Morning up-peak (07:30–10:00)**
 
 | Algorithm | Avg wait (s) | P95 wait (s) | Avg journey (s) | Energy (kWh) |
 |---|---:|---:|---:|---:|
-| FCFS | 18.3 | 40 | 52.0 | 33.2 |
-| LOOK (collective) | 6.7 | 27 | 47.8 | 31.8 |
-| Nearest Car (ETA) | 12.1 | 30 | 65.7 | 19.3 |
-| Destination Dispatch | 11.8 | 30 | 65.5 | 19.3 |
-| **LSTM + RL (λ=0.5)** | 7.8 | 27 | 55.7 | 22.6 |
+| FCFS | 17.7 | 39 | 49.9 | 32.8 |
+| LOOK (collective) | 6.0 | 25 | 45.3 | 31.7 |
+| Nearest Car (ETA) | 12.1 | 30 | 64.1 | 18.9 |
+| Destination Dispatch | 11.8 | 30 | 63.7 | 19.0 |
+| **LSTM + RL (λ=0.5)** | 7.9 | 27 | 53.8 | 22.1 |
 
 ### Experiments behind the LSTM + RL design
 
 These are not separate algorithms; they justify the choices above.
 
-**Choosing λ** (full day, one seed each; Nearest Car: 13.5 s, 124.6 kWh). λ is the price of
+**Choosing λ** (full day, one seed each; Nearest Car: 13.0 s, 120.4 kWh). λ is the price of
 energy in seconds of waiting per Wh. Smaller λ waits less but spends more energy; larger λ saves energy but waits longer.
 λ = 0.5 was fixed before training (`MAIN_LAM` in `rl.py`), not picked from test results, and it is
 the only value that beats Nearest Car on both.
 
 | λ | Avg wait (s) | Energy (kWh) |
 |---:|---:|---:|
-| 0 | 10.3 | 161.8 |
-| 0.25 | 10.4 | 128.5 |
-| **0.5 (chosen; mean of 5 seeds)** | 11.0 | 119.1 |
-| 1 | 15.4 | 100.5 |
-| 2 | 20.7 | 87.2 |
+| 0 | 9.4 | 158.2 |
+| 0.25 | 9.5 | 124.6 |
+| **0.5 (chosen; mean of 5 seeds)** | 10.3 | 114.7 |
+| 1 | 15.0 | 95.7 |
+| 2 | 20.0 | 83.1 |
 
 **Does the forecast help? Ablations** (full day, λ = 0.5, mean ± std over 5 training seeds). The same agent with no forecast (only the last 5 minutes of calls) and with a perfect (oracle) forecast:
 
 | Agent | Avg wait (s) | Energy (kWh) | Seeds better than Nearest Car on both |
 |---|---:|---:|---:|
-| Nearest Car (reference) | 13.5 | 124.6 | – |
-| LSTM + RL | 11.0 ± 0.3 | 119.1 ± 1.7 | 5 / 5 |
-| RL, no forecast | 11.7 ± 0.8 | 116.5 ± 3.2 | 5 / 5 |
-| RL + oracle forecast | 11.0 ± 0.4 | 116.3 ± 1.9 | 5 / 5 |
+| Nearest Car (reference) | 13.0 | 120.4 | – |
+| LSTM + RL | 10.3 ± 0.2 | 114.7 ± 1.5 | 5 / 5 |
+| RL, no forecast | 11.2 ± 0.8 | 111.1 ± 3.4 | 5 / 5 |
+| RL + oracle forecast | 10.3 ± 0.4 | 111.8 ± 2.1 | 5 / 5 |
 
 **Demand forecasting** (next 5 minutes, per floor & direction, test days 84–111)
 
@@ -150,19 +150,20 @@ the only value that beats Nearest Car on both.
 ### Findings
 
 1. **LSTM + RL beats the best classical algorithm on waiting *and* energy at the same time.** At λ = 0.5, full day,
-   averaged over 5 training seeds: 11.0 s average wait vs 13.5 s for Nearest Car (−19%), 119 kWh vs 125 kWh (−4%),
-   95th-percentile wait 36 s vs 43 s. **All 5 seeds** beat Nearest Car on both, so it is not one lucky training run.
-2. **λ gives a real trade-off curve.** λ = 0 waits least (10.3 s) but parks cars aggressively (162 kWh);
-   λ = 2 uses 30% less energy than Nearest Car (87 kWh) but waits longer (20.7 s). A building owner picks the point.
-3. **Coordination matters most for energy.** Group control (Nearest Car) uses **37% less energy** than
+   averaged over 5 training seeds and all 20 test weekdays: 10.3 s average wait vs 13.0 s for Nearest Car (−21%),
+   115 kWh vs 120 kWh (−5%), 95th-percentile wait 34 s vs 41 s. It beats Nearest Car on both in **all 100 runs**
+   (20 days × 5 seeds), so it is neither one lucky training run nor one lucky day.
+2. **λ gives a real trade-off curve.** λ = 0 waits least (9.4 s) but parks cars aggressively (158 kWh);
+   λ = 2 uses 31% less energy than Nearest Car (83 kWh) but waits longer (20.0 s). A building owner picks the point.
+3. **Coordination matters most for energy.** Group control (Nearest Car) uses **38% less energy** than
    uncoordinated LOOK, whose cars all chase the same calls.
 4. **The sequence models are the best forecasters.** Bi-LSTM+GRU closes ~79% of the gap between the historical
    average and the oracle noise floor, because it sees *today's* level (occupancy, early peak, a conference).
    It edges out the plain LSTM, but only by a small margin.
 5. **Most of the dispatching gain comes from RL; the forecast adds a smaller, consistent extra.** All three λ = 0.5
    agents beat Nearest Car, even the one without a forecast. Compared with that no-forecast agent, the LSTM agent has
-   a lower combined cost (wait + λ·energy) in **4 of 5 seeds**: it waits 0.7 s less for 2.6 kWh more, and its
-   results vary 3× less between seeds. A *perfect* forecast beats the LSTM in all 5 seeds (same wait, ~2.8 kWh less),
+   a lower combined cost (wait + λ·energy) in **all 5 seeds**: it waits 0.9 s less for 3.6 kWh more, and its
+   results vary 3× less between seeds. A *perfect* forecast beats the LSTM in all 5 seeds (same wait, ~2.9 kWh less),
    so a more accurate forecaster would help further.
 6. **Active learning: the naive version fails, a diverse version helps early.** After a tenant change:
    * Picking the 24 most uncertain windows (MC dropout) is no better than not updating, because they are
@@ -181,4 +182,4 @@ the only value that beats Nearest Car on both.
   rather than statistically strong.
 * The LSTM's forecasts on training days are in-sample (it was trained on them), so the agent sees slightly
   better forecasts in training than at test time.
-* Results are averaged over 5 test days, so small differences (< ~0.5 s) are within noise.
+* Results are averaged over 20 test weekdays, so differences of a few tenths of a second are within noise.

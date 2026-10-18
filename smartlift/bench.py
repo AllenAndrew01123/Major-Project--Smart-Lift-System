@@ -52,7 +52,7 @@ def run_one(cfg: BuildingConfig, dispatcher, day_trips: pd.DataFrame, scenario: 
 def benchmark(algorithms: list[str] | None = None, scenarios: list[str] | None = None,
               days: list[int] | None = None, cfg: BuildingConfig = BuildingConfig(), progress=None) -> pd.DataFrame:
     df = load_dataset()[0]
-    days = days or TEST_WEEKDAYS[:5]
+    days = days or TEST_WEEKDAYS
     scenarios = scenarios or list(SCENARIOS)
     rows = []
     jobs = [(d, s) for d in days for s in scenarios]
